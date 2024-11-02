@@ -1,0 +1,66 @@
+Index: cmd/main.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package main\n\nimport (\n\t\"context\"\n\t\"strings\"\n\t\"xaxaton/internal/usecase/review\"\n\n\t\"github.com/gofiber/fiber/v2\"\n\t\"github.com/gofiber/fiber/v2/middleware/cors\"\n\t\"github.com/gofiber/fiber/v2/middleware/logger\"\n\n\tconfigure \"xaxaton/internal/configure\"\n)\n\nfunc main() {\n\tapp := fiber.New()\n\tapp.Use(logger.New())\n\tapp.Use(\n\t\tcors.New(\n\t\t\tcors.Config{\n\t\t\t\tNext:             nil,\n\t\t\t\tAllowOriginsFunc: nil,\n\t\t\t\tAllowOrigins:     \"*\",\n\t\t\t\tAllowMethods: strings.Join([]string{\n\t\t\t\t\tfiber.MethodGet,\n\t\t\t\t\tfiber.MethodPost,\n\t\t\t\t\tfiber.MethodHead,\n\t\t\t\t\tfiber.MethodPut,\n\t\t\t\t\tfiber.MethodDelete,\n\t\t\t\t\tfiber.MethodPatch,\n\t\t\t\t}, \",\"),\n\t\t\t\tAllowCredentials: false,\n\t\t\t\tMaxAge:           0,\n\t\t\t},\n\t\t),\n\t)\n\n\tctx := context.Background()\n\n\tcfg := configure.MustConfig(nil)\n\n\tdbpool := configure.NewPostgres(ctx, cfg.Postgres)\n\tdefer dbpool.Close()\n\n\t// UseCase\n\treviewData := review.NewUseCase()\n\n\tif err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != \"no change\" {\n\t\tpanic(err)\n\t}\n\n\tif err := reviewData.ParseJSON(); err != nil {\n\t\tpanic(err)\n\t}\n\n\tif err := app.Listen(cfg.Fiber.String()); err != nil {\n\t\tpanic(\"app not start\")\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/cmd/main.go b/cmd/main.go
+--- a/cmd/main.go	(revision 3f0d21250a73adfac041f7dbd8c299b89adfc6c1)
++++ b/cmd/main.go	(date 1730555017256)
+@@ -45,11 +45,13 @@
+ 	// UseCase
+ 	reviewData := review.NewUseCase()
+ 
+-	if err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != "no change" {
+-		panic(err)
+-	}
+-
+-	if err := reviewData.ParseJSON(); err != nil {
++	go func() {
++		if err := reviewData.ParseJSON(); err != nil {
++			panic(err)
++		}
++	}()
++
++	if err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != "no change" {
+ 		panic(err)
+ 	}
+ 
+Index: internal/usecase/review/review.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n)\n\ntype UseCase struct {\n}\n\nfunc NewUseCase() *UseCase {\n\treturn &UseCase{}\n}\n\nfunc (*UseCase) ParseJSON() error {\n\tplan, err := os.ReadFile(\"internal/usecase/review/review_dataset.json\")\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tvar data []Review\n\n\terr = json.Unmarshal(plan, &data)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tfor _, review := range data {\n\t\tfmt.Println(review)\n\t\tbreak\n\t}\n\n\treturn nil\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/review.go b/internal/usecase/review/review.go
+--- a/internal/usecase/review/review.go	(revision 3f0d21250a73adfac041f7dbd8c299b89adfc6c1)
++++ b/internal/usecase/review/review.go	(date 1730555499692)
+@@ -13,6 +13,8 @@
+ 	return &UseCase{}
+ }
+ 
++type User map[int64][]string
++
+ func (*UseCase) ParseJSON() error {
+ 	plan, err := os.ReadFile("internal/usecase/review/review_dataset.json")
+ 	if err != nil {
+@@ -33,3 +35,17 @@
+ 
+ 	return nil
+ }
++
++func buildData(reviews *[]Review) error {
++	data := make(map[int64]User, len(*reviews))
++
++	for _, review := range *reviews {
++		if _, ok := data[review.UserID]; !ok {
++			data[review.UserID] = make(User, 100)
++		}
++
++		data[review.UserID][review.ReviewID] = append(data[review.UserID][review.ReviewID], review.Feedback)
++	}
++
++	return nil
++}

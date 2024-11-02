@@ -1,19 +1,28 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"os"
+
+	"golang.org/x/sync/errgroup"
+
+	"xaxaton/internal/model"
 )
 
 type UseCase struct {
+	feedback feedback
 }
 
-func NewUseCase() *UseCase {
-	return &UseCase{}
+func NewUseCase(f feedback) *UseCase {
+	return &UseCase{
+		feedback: f,
+	}
 }
 
-func (*UseCase) ParseJSON() error {
+type User map[int64][]string
+
+func (u *UseCase) ParseJSON(ctx context.Context) error {
 	plan, err := os.ReadFile("internal/usecase/review/review_dataset.json")
 	if err != nil {
 		return err
@@ -26,10 +35,51 @@ func (*UseCase) ParseJSON() error {
 		return err
 	}
 
-	for _, review := range data {
-		fmt.Println(review)
-		break
+	g, ctxErr := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		return u.saveToDB(ctxErr, &data)
+	})
+
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+func (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {
+	data := make([]model.Review, 0, len(*reviews))
+
+	for _, review := range *reviews {
+		data = append(data, model.Review{
+			UserID:   review.UserID,
+			ReviewID: review.ReviewID,
+			Feedback: review.Feedback,
+		})
+	}
+
+	if err := u.feedback.CreateReview(ctx, data); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) ([]model.Review, error) {
+	data := make(map[int64]User, len(*reviews))
+	selfReviews := make(map[int64]User, len(*reviews))
+
+	for _, review := range *reviews {
+		if _, ok := data[review.UserID]; !ok {
+			data[review.UserID] = make(User, 100)
+		}
+
+		if review.UserID == review.ReviewID {
+			selfReviews[review.UserID][review.UserID] = append(selfReviews[review.UserID][review.UserID], review.Feedback)
+
+			continue
+		}
+
+		data[review.UserID][review.ReviewID] = append(data[review.UserID][review.ReviewID], review.Feedback)
+	}
 }

@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"strings"
-	"xaxaton/internal/usecase/review"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 
 	configure "xaxaton/internal/configure"
+	"xaxaton/internal/repo/review"
+	reviewUC "xaxaton/internal/usecase/review"
 )
 
 func main() {
@@ -42,16 +43,22 @@ func main() {
 	dbpool := configure.NewPostgres(ctx, cfg.Postgres)
 	defer dbpool.Close()
 
-	// UseCase
-	reviewData := review.NewUseCase()
+	// Repo layer
+	//feedbackDB := feedback.New(dbpool)
+	reviewDB := review.New(dbpool)
+
+	// UseCase layer
+	reviewData := reviewUC.NewUseCase(reviewDB)
 
 	if err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != "no change" {
 		panic(err)
 	}
 
-	if err := reviewData.ParseJSON(); err != nil {
-		panic(err)
-	}
+	go func() {
+		if err := reviewData.ParseJSON(ctx); err != nil {
+			panic(err)
+		}
+	}()
 
 	if err := app.Listen(cfg.Fiber.String()); err != nil {
 		panic("app not start")
