@@ -1,11 +1,24 @@
-package repo
+package feedback
 
 import (
 	"context"
 	"fmt"
+
 	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+
 	"xaxaton/internal/model"
 )
+
+type Storage struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Storage {
+	return &Storage{
+		pool: pool,
+	}
+}
 
 func (s *Storage) CreateFeedback(ctx context.Context,
 	feedbacks []model.Feedback,

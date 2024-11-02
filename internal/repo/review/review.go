@@ -1,11 +1,24 @@
-package repo
+package review
 
 import (
 	"context"
 	"fmt"
+
 	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+
 	"xaxaton/internal/model"
 )
+
+type Storage struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Storage {
+	return &Storage{
+		pool: pool,
+	}
+}
 
 func (s *Storage) CreateReview(ctx context.Context,
 	reviews []model.Review,
