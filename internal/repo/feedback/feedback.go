@@ -85,3 +85,64 @@ func (s *Storage) GetFeedback(ctx context.Context,
 
 	return feedbacks, nil
 }
+
+func (s *Storage) InsertScore(ctx context.Context,
+	feedbacks []model.Feedback,
+) error {
+	const op = "repo.InsertScore"
+
+	batch := &pgx.Batch{}
+	query := `INSERT INTO feedback (user_id, score) VALUES ($1, $2)`
+
+	for _, feedback := range feedbacks {
+		batch.Queue(query, feedback.UserID, feedback.Score)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%s:%w", op, err)
+	}
+	defer tx.Rollback(ctx)
+
+	br := tx.SendBatch(ctx, batch)
+	if err = br.Close(); err != nil {
+		return fmt.Errorf("%s: %w", err)
+	}
+
+	err = tx.Commit(ctx)
+	if err != nil {
+		return fmt.Errorf("%s:%w", op, err)
+	}
+
+	return nil
+}
+
+func (s *Storage) UpdateResume(ctx context.Context,
+	feedbacks []model.Feedback,
+) error {
+	const op = "repo.UpdateResume"
+
+	var (
+		query = `
+			UPDATE feedback
+			SET result = $2, resume = $3
+			WHERE user_id = $1
+		`
+	)
+
+	batch := &pgx.Batch{}
+
+	for _, feedback := range feedbacks {
+		batch.Queue(query, feedback.UserID, feedback.Result, feedback.Resume)
+	}
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for range feedbacks {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("%s: %w", op, err)
+		}
+	}
+
+	return nil
+}
