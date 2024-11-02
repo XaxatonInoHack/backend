@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"strings"
+	"xaxaton/internal/usecase/review"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -41,7 +42,14 @@ func main() {
 	dbpool := configure.NewPostgres(ctx, cfg.Postgres)
 	defer dbpool.Close()
 
+	// UseCase
+	reviewData := review.NewUseCase()
+
 	if err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != "no change" {
+		panic(err)
+	}
+
+	if err := reviewData.ParseJSON(); err != nil {
 		panic(err)
 	}
 
