@@ -21,7 +21,10 @@ func ParseReview(text string) (map[string]float64, map[string]string) {
 		if colonIndex == -1 {
 			continue
 		}
-		category := strings.TrimSpace(section[:colonIndex])
+		dotIndex := strings.Index(section, ".")
+		category := strings.TrimSpace(section[dotIndex+1 : colonIndex])
+		category = strings.TrimSpace(category)
+
 		scoreText := strings.TrimSpace(section[colonIndex+1:])
 
 		// Проверяем, есть ли "/"
