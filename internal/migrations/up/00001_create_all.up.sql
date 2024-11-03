@@ -5,6 +5,7 @@ create table if not exists "review"
     review_id bigint       not null,
     feedback  text         not null,
     period    varchar(255) not null
+    UNIQUE (user_id, review_id, period)
 );
 
 create table if not exists "feedback"

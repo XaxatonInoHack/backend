@@ -26,7 +26,11 @@ func (s *Storage) CreateReview(ctx context.Context,
 	const op = "repo.CreateReview"
 
 	batch := &pgx.Batch{}
-	query := `INSERT INTO review (user_id, review_id, feedback, period) VALUES ($1, $2, $3, $4)`
+	query := `INSERT INTO review 
+    (user_id, review_id, feedback, period) 
+	VALUES ($1, $2, $3, $4)
+	ON CONFLICT DO NOTHING
+`
 
 	for _, review := range reviews {
 		batch.Queue(query, review.UserID, review.ReviewID, review.Feedback, review.Period)
