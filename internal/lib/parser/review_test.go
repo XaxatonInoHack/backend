@@ -1,30 +1,19 @@
 package parser
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
 
 func TestParseScores(t *testing.T) {
-	text := `Based on the reviews, I'll evaluate the employee's performance as follows:
-
-1. Professionalism: 5
-The employee is described as having high professionalism in Review 1, with traits like intelligence, politeness, and the ability to balance interests. Review 5 also praises the employee as the "лучший программист эвер" (best programmer ever), suggesting exceptional professional skills. This is consistent with the evaluation from others, who gave a high score for Initiative. Although Review 3 hints at some potential issues, it's a relatively minor criticism and doesn't seem to impugn the employee's professionalism. Overall, the reviews suggest a high level of professionalism.
-
-2. Teamwork: 4.5
-Review 4 praises the employee's "командную работу" (teamwork), indicating a strong ability to collaborate with others. Review 1 also describes the employee as someone who can be approached with any questions, suggesting openness and a willingness to help. While Review 3 expresses a minor criticism, it's not directly related to teamwork. The employee's own evaluation score for Teamwork is high, which is consistent with the reviews. Overall, the reviews suggest strong teamwork skills.
-
-3. Communication: 4.5
-Review 1 highlights the employee's excellent communication skills, praising their ability to provide clear explanations. Review 4 also appreciates the employee's "открытость к диалогу" (openness to dialogue), indicating strong communication. Although Review 3 expresses a minor criticism, it's not directly related to communication. The reviews suggest that the employee is generally clear and approachable. The employee's own evaluation score for Communication is relatively low, but the reviews suggest this might be an underestimation.
-
-4. Initiative: 5
-The employee's own evaluation score for Initiative is already high, and Review 1 suggests a proactive approach to helping others. Review 4 praises the employee's "нацеленность на результат" (focus`
+	text := "Оценка сотрудника по критериям:\n\n1. Профессионализм: 5\nСотрудник демонстрирует высокий уровень профессионализма, о чем свидетельствует его способность давать логические объяснения и находить эффективные решения. Это подтверждается в нескольких отзывах, где коллеги подчеркивают его компетентность и умение решать сложные задачи.\n\n2. Командная работа: 5\nСотрудник отлично работает в команде, о чем говорят отзывы о его конструктивном взаимодействии, командной работе и нацеленности на результат. Это говорит о его способности эффективно сотрудничать с коллегами и вносить свой вклад в достижение общих целей.\n\n3. Коммуникабельность: 5\nСотрудник обладает отличными коммуникативными навыками, о чем свидетельствуют отзывы о его вежливости, мягкости и интеллигентности. Это позволяет ему легко взаимодействовать с коллегами и клиентами, находить общий язык и решать сложные вопросы.\n\n4. Инициативность: 3\nНекоторые отзывы указывают на то, что сотрудник может быть немного консервативен в своих подходах, что может ограничивать его инициативность. Однако другие отзывы указывают на его способность находить эффективные решения, что предполагает, что он обладает некоторой инициативностью.\n\nРезюме: \nСотрудник демонстрирует высокий уровень профессионализма, отличную командную работу и отличные коммуникативные навыки. Однако, ему может быть полезно работать над своей инициативностью, чтобы еще больше"
 
 	expected := map[string]float64{
-		"Professionalism": 5.0,
-		"Teamwork":        4.5,
-		"Communication":   4.5,
-		"Initiative":      5.0,
+		"Профессионализм":    5.0,
+		"Командная работа":   5.0,
+		"Коммуникабельность": 5.0,
+		"Инициативность":     3.0,
 	}
 
 	result := ParseScoreOnly(text)
@@ -63,32 +52,22 @@ This text contains invalid score.`
 }
 
 func TestParseCategoryTexts(t *testing.T) {
-	text := `Based on the reviews, I'll evaluate the employees on the given criteria. Please note that the reviews are not labeled with specific employee names, so I'll provide a general evaluation for each employee ID.
-
-**Employee ID - 59595**
-1. Professionalism: 5
-The employee demonstrates deep expertise in technical and organizational aspects of the company and can find solutions to complex situations. Their knowledge and experience are highly valued by colleagues. They provide valuable feedback and suggestions, and their involvement in projects is highly appreciated. Their professionalism is evident in their ability to balance security, timelines, and comfort of work. Overall, they are considered an expert in their field.
-
-2. Teamwork: 5
-The employee is praised for their ability to work collaboratively with colleagues, finding compromises and solutions that benefit everyone. They are willing to help and provide guidance, making them a valuable team player. Their involvement in team projects is highly appreciated, and they are able to bring people together to achieve common goals. They demonstrate a strong sense of responsibility and accountability. Their team-oriented approach is evident in their ability to find mutually beneficial solutions.
-
-3. Communication: 5
-The employee is commended for their excellent communication skills, being able to explain complex issues in a clear and concise manner. They are approachable, open, and willing to listen to others. Their communication style is constructive, and they are able to find common ground with colleagues. They are able to articulate their thoughts and opinions effectively, making them an effective communicator. Their ability to communicate technical information to non-technical colleagues is particularly valued.
-
-4. Initiative: 5
-The employee is praised for their proactive approach, taking the initiative to find solutions to problems and improve processes. They are willing to take on new challenges and are not afraid to think outside the box. Their creativity and resourcefulness are highly valued by colleagues. They demonstrate a strong sense of ownership and accountability, taking charge of projects and seeing them through to completion. Their willingness to`
-
+	text := `Оценка сотрудника по критериям:\n\n1. Профессионализм: 5\nСотрудник демонстрирует высокий уровень профессионализма, о чем свидетельствует его способность эффективно решать сложные задачи и достигать высоких результатов. Это подтверждается в нескольких отзывах, где он показывает 100% результаты по ключевым показателям и успешно внедряет новые решения.\n\n2. Командная работа: 5\nСотрудник отлично работает в команде, о чем говорят отзывы о его способности эффективно взаимодействовать с коллегами и вносить свой вклад в достижение общих целей. Это подтверждается его участием в различных проектах и его способностью оказывать техническую поддержку другим сотрудникам.\n\n3. Коммуникабельность: 4\nСотрудник обладает хорошими коммуникативными навыками, о чем свидетельствуют отзывы о его способности четко объяснять свои решения и взаимодействовать с другими сотрудниками. Однако, отсутствие каких-либо конкретных отзывов о его общении с клиентами или другими заинтересованными сторонами не позволяет给我 оценить его коммуникативные навы на 5.\n\n4. Инициативность: 4\nСотрудник демонстрирует инициативность в своих подходах, о чем свидетельствуют его инициативы по разработке новых решений и внедрению карьерных треков. Однако, некоторые отзывы не указывают на то, что он стремится выходить за рамки своих обязанностей или предлагает новые идеи.\n\nРезюме: \nСотрудник демонстрирует высокий уровень профессионализма, отличную`
 	expected := map[string]string{
-		"Professionalism": `The employee demonstrates deep expertise in technical and organizational aspects of the company and can find solutions to complex situations. Their knowledge and experience are highly valued by colleagues. They provide valuable feedback and suggestions, and their involvement in projects is highly appreciated. Their professionalism is evident in their ability to balance security, timelines, and comfort of work. Overall, they are considered an expert in their field.`,
-		"Teamwork":        `The employee is praised for their ability to work collaboratively with colleagues, finding compromises and solutions that benefit everyone. They are willing to help and provide guidance, making them a valuable team player. Their involvement in team projects is highly appreciated, and they are able to bring people together to achieve common goals. They demonstrate a strong sense of responsibility and accountability. Their team-oriented approach is evident in their ability to find mutually beneficial solutions.`,
-		"Communication":   `The employee is commended for their excellent communication skills, being able to explain complex issues in a clear and concise manner. They are approachable, open, and willing to listen to others. Their communication style is constructive, and they are able to find common ground with colleagues. They are able to articulate their thoughts and opinions effectively, making them an effective communicator. Their ability to communicate technical information to non-technical colleagues is particularly valued.`,
-		"Initiative":      `The employee is praised for their proactive approach, taking the initiative to find solutions to problems and improve processes. They are willing to take on new challenges and are not afraid to think outside the box. Their creativity and resourcefulness are highly valued by colleagues. They demonstrate a strong sense of ownership and accountability, taking charge of projects and seeing them through to completion. Their willingness to`,
+		"Профессионализм":    "Сотрудник демонстрирует высокий уровень профессионализма, о чем свидетельствует его способность давать логические объяснения и находить эффективные решения. Это подтверждается в нескольких отзывах, где коллеги подчеркивают его компетентность и умение решать сложные задачи.",
+		"Командная работа":   "Сотрудник отлично работает в команде, о чем говорят отзывы о его конструктивном взаимодействии, командной работе и нацеленности на результат. Это говорит о его способности эффективно сотрудничать с коллегами и вносить свой вклад в достижение общих целей.",
+		"Коммуникабельность": "Сотрудник обладает отличными коммуникативными навыками, о чем свидетельствуют отзывы о его вежливости, мягкости и интеллигентности. Это позволяет ему легко взаимодействовать с коллегами и клиентами, находить общий язык и решать сложные вопросы.",
+		"Инициативность":     "Некоторые отзывы указывают на то, что сотрудник может быть немного консервативен в своих подходах, что может ограничивать его инициативность. Однако другие отзывы указывают на его способность находить эффективные решения, что предполагает, что он обладает некоторой инициативностью.",
+		"Резюме":             "Сотрудник демонстрирует высокий уровень профессионализма, отличную командную работу и отличные коммуникативные навыки. Однако, ему может быть полезно работать над своей инициативностью, чтобы еще больше",
 	}
 
-	result := ParseCategoryTexts(text)
+	result := ParseCriteriaText(text)
+	for key, value := range expected {
+		fmt.Println(key, value)
+	}
 
 	if !reflect.DeepEqual(result, expected) {
-		t.Errorf("Ожидается %v, получено %v", expected, result)
+		t.Errorf("Ожидается %v,\nполучено %v", expected, result)
 	}
 }
 
@@ -117,10 +96,10 @@ Text text text
 		"Overall Perfomance": "Text text text",
 	}
 
-	result := ParseCategoryTexts(text)
+	result := ParseCriteriaText(text)
 
 	if !reflect.DeepEqual(result, expected) {
-		t.Errorf("Ожидается %v, получено %v", expected, result)
+		t.Errorf("Ожидается %v,\n получено %v", expected, result)
 	}
 }
 
@@ -129,7 +108,7 @@ func TestParseCategoryTextsWithNoCategories(t *testing.T) {
 
 	expected := map[string]string{}
 
-	result := ParseCategoryTexts(text)
+	result := ParseCriteriaText(text)
 
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Ожидается пустая карта, получено %v", result)
@@ -149,9 +128,40 @@ Teamwork text.
 		"Teamwork": "Teamwork text.",
 	}
 
-	result := ParseCategoryTexts(text)
+	result := ParseCriteriaText(text)
 
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("Ожидается %v, получено %v", expected, result)
+	}
+}
+
+func TestParseScores1(t *testing.T) {
+	type args struct {
+		text string
+	}
+	tests := []struct {
+		name string
+		args args
+		want map[string]float64
+	}{
+		{
+			name: "ok",
+			args: args{
+				text: "Профессионализм: 5.0 Командная работа: 4.0 Коммуникабельность: 4.0 Инициативность: 4.0 ",
+			},
+			want: map[string]float64{
+				"Профессионализм":    5.0,
+				"Командная работа":   4.0,
+				"Коммуникабельность": 4.0,
+				"Инициативность":     4.0,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseScores(tt.args.text); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseScores() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
