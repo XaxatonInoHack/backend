@@ -2,6 +2,7 @@ package feedback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -54,7 +55,7 @@ func (s *Storage) CreateFeedback(ctx context.Context,
 
 func (s *Storage) GetFeedback(ctx context.Context,
 	userId int64,
-) ([]model.Feedback, error) {
+) (model.Feedback, error) {
 	const op = "repo.GetFeedback"
 
 	var (
@@ -63,28 +64,19 @@ func (s *Storage) GetFeedback(ctx context.Context,
 		FROM feedback
 		WHERE user_id = $1
 	`
-		feedbacks []model.Feedback
+		feedback model.Feedback
 	)
 
-	rows, err := s.pool.Query(ctx, query, userId)
+	err := s.pool.QueryRow(ctx, query, userId).
+		Scan(&feedback.UserID, &feedback.Score, &feedback.Result, &feedback.Resume)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var feedback model.Feedback
-		if err = rows.Scan(&feedback.UserID, &feedback.Score, &feedback.Result, &feedback.Resume); err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Feedback{}, fmt.Errorf("%s: no feedback found for user %d", op, userId)
 		}
-		feedbacks = append(feedbacks, feedback)
+		return model.Feedback{}, fmt.Errorf("%s: %w", op, err)
 	}
 
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-
-	return feedbacks, nil
+	return feedback, nil
 }
 
 func (s *Storage) GetFeedbackAll(ctx context.Context,
