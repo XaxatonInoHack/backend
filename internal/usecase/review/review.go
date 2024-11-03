@@ -56,6 +56,10 @@ func (u *UseCase) ParseJSON(ctx context.Context) error {
 		return err
 	}
 
+	if err := u.createFeedbackTwo(ctx, &data); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -95,12 +99,15 @@ func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) erro
 
 		if selfFeedback != "" {
 			selfScore := parser.ParseScoreOnly(selfFeedback)
-			err = u.self.InsertSelfScore(ctx, []model.SelfReview{
+			fmt.Println("selfScore:", selfScore)
+			selfResume := parser.ParseCriteriaText(selfFeedback)
+			fmt.Println("selfResume:", selfResume, selfFeedback)
+			err = u.self.CreateSelfReview(ctx, []model.SelfReview{
 				{
 					UserID: userID,
 					Score:  employeeScoreToDB(selfScore),
 					Resume: selfFeedback,
-					Result: scoreToResult(selfScore),
+					Result: selfResume["Резюме"],
 				},
 			})
 			if err != nil {
@@ -109,6 +116,7 @@ func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) erro
 		}
 
 		employeeScore := parser.ParseScoreOnly(employeeFeedback)
+		fmt.Println("employeeScore", employeeScore)
 		err = u.feedback.CreateFeedback(ctx, []model.Feedback{
 			{
 				UserID: userID,
@@ -138,26 +146,23 @@ func (u *UseCase) createFeedbackTwo(ctx context.Context, reviews *[]Review) erro
 
 	update := make([]model.Feedback, 0, len(employeeReviews))
 	for _, userID := range userIDs {
-		employeeScore, ok := employeeScores[userID]
-		if !ok {
-			continue
-		}
-
 		employeeReview := employeeReviews[userID]
 
-		employeeFeedback, err := u.llm.GetFeedbackLLMFinal(context.WithoutCancel(ctx), employeeReview, employeeScore.Score)
+		employeeFeedback, err := u.llm.GetFeedbackLLMFinal(context.WithoutCancel(ctx), employeeReview, employeeScores)
 		if err != nil {
 			return err
 		}
 
-		employeeScoreTwo := parser.ParseScoreOnly(employeeFeedback)
-		employeeResult := parser.ParseCategoryTexts(employeeFeedback)
+		employeeScore := parser.ParseScoreOnly(employeeFeedback)
+		employeeResult := parser.ParseCriteriaText(employeeFeedback)
 		update = append(update, model.Feedback{
 			UserID: userID,
-			Score:  employeeScoreToDB(employeeScoreTwo),
+			Score:  employeeScoreToDB(employeeScore),
 			Result: employeeFeedback,
-			Resume: employeeResult["Overall Resume"],
+			Resume: employeeResult["Резюме"],
 		})
+
+		fmt.Println(fmt.Sprintf("Ready for %v,\nscore: %v,\nresume: %v\n\n", userID, employeeScore, employeeResult["Overall Resume"]))
 	}
 
 	err = u.feedback.UpdateResume(ctx, update)

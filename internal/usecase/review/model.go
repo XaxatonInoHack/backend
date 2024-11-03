@@ -16,15 +16,3 @@ func employeeScoreToDB(score map[string]float64) string {
 
 	return result
 }
-
-func scoreToResult(score map[string]float64) string {
-	result := 0.0
-	count := 0
-	for _, value := range score {
-		result += value
-		count += 1
-	}
-
-	result = result / float64(count)
-	return strconv.FormatFloat(result, 'f', 1, 64)
-}
