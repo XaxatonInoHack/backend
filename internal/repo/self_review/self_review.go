@@ -3,6 +3,7 @@ package self_review
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -52,7 +53,7 @@ func (s *Storage) CreateSelfReview(ctx context.Context,
 }
 
 func (s *Storage) GetSelfReviews(ctx context.Context,
-	userId int,
+	userId int64,
 ) ([]model.SelfReview, error) {
 	const op = "repo.GetSelfReviews"
 
@@ -84,6 +85,56 @@ func (s *Storage) GetSelfReviews(ctx context.Context,
 	}
 
 	return selfReviews, nil
+}
+
+func (s *Storage) GetSelfReviewsAll(ctx context.Context,
+	userIDs []int64,
+) (map[int64]model.SelfReview, error) {
+	const op = "repo.GetSelfReviewsAll"
+
+	// Проверяем, что срез userIDs не пуст
+	if len(userIDs) == 0 {
+		return nil, fmt.Errorf("%s: no user IDs provided", op)
+	}
+
+	// Генерируем плейсхолдеры для запроса
+	placeholders := make([]string, len(userIDs))
+	args := make([]interface{}, len(userIDs))
+	for i, id := range userIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	// Формируем запрос с использованием плейсхолдеров
+	query := fmt.Sprintf(`
+        SELECT user_id, score, result, resume
+        FROM self_review
+        WHERE user_id IN (%s)
+    `, strings.Join(placeholders, ", "))
+
+	// Инициализируем карту для результатов
+	selfReviewsMap := make(map[int64]model.SelfReview)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var selfReview model.SelfReview
+		if err = rows.Scan(&selfReview.UserID, &selfReview.Score, &selfReview.Result, &selfReview.Resume); err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		// Добавляем selfReview в карту, перезаписывая предыдущий, если такой уже есть
+		selfReviewsMap[selfReview.UserID] = selfReview
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return selfReviewsMap, nil
 }
 
 func (s *Storage) InsertSelfScore(ctx context.Context,

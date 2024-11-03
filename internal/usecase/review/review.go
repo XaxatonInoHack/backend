@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"xaxaton/internal/lib/parser"
 
 	"golang.org/x/sync/errgroup"
 
+	"xaxaton/internal/lib/parser"
 	"xaxaton/internal/model"
 )
 
@@ -78,6 +78,97 @@ func (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {
 }
 
 func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) error {
+	employeeReviews, selfReviews := u.getReviews(reviews)
+
+	for userID := range employeeReviews {
+		employeeReview := employeeReviews[userID]
+
+		selfReview, ok := selfReviews[userID]
+		if !ok {
+			selfReview = nil
+		}
+
+		employeeFeedback, selfFeedback, err := u.llm.GetFeedbackLLM(context.WithoutCancel(ctx), selfReview, employeeReview)
+		if err != nil {
+			return err
+		}
+
+		if selfFeedback != "" {
+			selfScore := parser.ParseScoreOnly(selfFeedback)
+			err = u.self.InsertSelfScore(ctx, []model.SelfReview{
+				{
+					UserID: userID,
+					Score:  employeeScoreToDB(selfScore),
+					Resume: selfFeedback,
+					Result: scoreToResult(selfScore),
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("insert employee feed score: %w", err)
+			}
+		}
+
+		employeeScore := parser.ParseScoreOnly(employeeFeedback)
+		err = u.feedback.CreateFeedback(ctx, []model.Feedback{
+			{
+				UserID: userID,
+				Score:  employeeScoreToDB(employeeScore),
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("insert employee feed score: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (u *UseCase) createFeedbackTwo(ctx context.Context, reviews *[]Review) error {
+	userIDs := make([]int64, 0, len(*reviews))
+	for _, review := range *reviews {
+		userIDs = append(userIDs, review.UserID)
+	}
+
+	employeeScores, err := u.feedback.GetFeedbackAll(ctx, userIDs)
+	if err != nil {
+		return err
+	}
+
+	employeeReviews, _ := u.getReviews(reviews)
+
+	update := make([]model.Feedback, 0, len(employeeReviews))
+	for _, userID := range userIDs {
+		employeeScore, ok := employeeScores[userID]
+		if !ok {
+			continue
+		}
+
+		employeeReview := employeeReviews[userID]
+
+		employeeFeedback, err := u.llm.GetFeedbackLLMFinal(context.WithoutCancel(ctx), employeeReview, employeeScore.Score)
+		if err != nil {
+			return err
+		}
+
+		employeeScoreTwo := parser.ParseScoreOnly(employeeFeedback)
+		employeeResult := parser.ParseCategoryTexts(employeeFeedback)
+		update = append(update, model.Feedback{
+			UserID: userID,
+			Score:  employeeScoreToDB(employeeScoreTwo),
+			Result: employeeFeedback,
+			Resume: employeeResult["Overall Resume"],
+		})
+	}
+
+	err = u.feedback.UpdateResume(ctx, update)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (u *UseCase) getReviews(reviews *[]Review) (map[int64]User, map[int64]User) {
 	employeeReviews := make(map[int64]User, len(*reviews))
 	selfReviews := make(map[int64]User, len(*reviews))
 
@@ -99,55 +190,5 @@ func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) erro
 		employeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)
 	}
 
-	g, errCtx := errgroup.WithContext(ctx)
-	for userID := range employeeReviews {
-		g.Go(func() error {
-			employeeReview := employeeReviews[userID]
-
-			selfReview, ok := selfReviews[userID]
-			if !ok {
-				selfReview = nil
-			}
-
-			employeeFeedback, selfFeedback, err := u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
-			if err != nil {
-				return err
-			}
-
-			if selfFeedback != "" {
-				selfScore, _ := parser.ParseReview(selfFeedback)
-				err = u.self.InsertSelfScore(ctx, []model.SelfReview{
-					{
-						UserID: userID,
-						Score:  employeeScoreToDB(selfScore),
-					},
-				})
-				if err != nil {
-					return fmt.Errorf("insert employee feed score: %w", err)
-				}
-			}
-
-			employeeScore, _ := parser.ParseReview(employeeFeedback)
-			fmt.Println(employeeScoreToDB(employeeScore), employeeFeedback)
-			err = u.feedback.CreateFeedback(ctx, []model.Feedback{
-				{
-					UserID: userID,
-					Score:  employeeScoreToDB(employeeScore),
-				},
-			})
-
-			if err != nil {
-				return fmt.Errorf("insert employee feed score: %w", err)
-			}
-
-			return nil
-		})
-		break
-	}
-
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
-	return nil
+	return employeeReviews, selfReviews
 }
