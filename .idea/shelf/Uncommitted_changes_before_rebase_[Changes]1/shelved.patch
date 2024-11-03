@@ -1,0 +1,222 @@
+Index: internal/usecase/review/contract.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"context\"\n\t\"xaxaton/internal/model\"\n)\n\ntype feedback interface {\n\tCreateReview(ctx context.Context, reviews []model.Review) error\n\tGetReview(ctx context.Context, userId int) ([]model.Review, error)\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/contract.go b/internal/usecase/review/contract.go
+--- a/internal/usecase/review/contract.go	(revision 2e8cfb2ef577b20c9d11a0095cc27656ab886d8d)
++++ b/internal/usecase/review/contract.go	(date 1730567318921)
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"context"
++
+ 	"xaxaton/internal/model"
+ )
+ 
+@@ -9,3 +10,7 @@
+ 	CreateReview(ctx context.Context, reviews []model.Review) error
+ 	GetReview(ctx context.Context, userId int) ([]model.Review, error)
+ }
++
++type llm interface {
++	GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error
++}
+Index: internal/usecase/review/review.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"os\"\n\n\t\"golang.org/x/sync/errgroup\"\n\n\t\"xaxaton/internal/model\"\n)\n\ntype UseCase struct {\n\tfeedback feedback\n}\n\nfunc NewUseCase(f feedback) *UseCase {\n\treturn &UseCase{\n\t\tfeedback: f,\n\t}\n}\n\ntype User map[int64][]string\n\nfunc (u *UseCase) ParseJSON(ctx context.Context) error {\n\tplan, err := os.ReadFile(\"internal/usecase/review/review_dataset.json\")\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tvar data []Review\n\n\terr = json.Unmarshal(plan, &data)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tg, ctxErr := errgroup.WithContext(ctx)\n\tg.Go(func() error {\n\t\treturn u.saveToDB(ctxErr, &data)\n\t})\n\n\tif err := g.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {\n\tdata := make([]model.Review, 0, len(*reviews))\n\n\tfor _, review := range *reviews {\n\t\tdata = append(data, model.Review{\n\t\t\tUserID:   review.UserID,\n\t\t\tReviewID: review.ReviewID,\n\t\t\tFeedback: review.Feedback,\n\t\t})\n\t}\n\n\tif err := u.feedback.CreateReview(ctx, data); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) ([]model.Review, error) {\n\tdata := make(map[int64]User, len(*reviews))\n\tselfReviews := make(map[int64]User, len(*reviews))\n\n\tfor _, review := range *reviews {\n\t\tif _, ok := data[review.UserID]; !ok {\n\t\t\tdata[review.UserID] = make(User, 100)\n\t\t}\n\n\t\tif review.UserID == review.ReviewID {\n\t\t\tselfReviews[review.UserID][review.UserID] = append(selfReviews[review.UserID][review.UserID], review.Feedback)\n\n\t\t\tcontinue\n\t\t}\n\n\t\tdata[review.UserID][review.ReviewID] = append(data[review.UserID][review.ReviewID], review.Feedback)\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/review.go b/internal/usecase/review/review.go
+--- a/internal/usecase/review/review.go	(revision 2e8cfb2ef577b20c9d11a0095cc27656ab886d8d)
++++ b/internal/usecase/review/review.go	(date 1730567563558)
+@@ -12,11 +12,13 @@
+ 
+ type UseCase struct {
+ 	feedback feedback
++	llm      llm
+ }
+ 
+-func NewUseCase(f feedback) *UseCase {
++func NewUseCase(f feedback, llm llm) *UseCase {
+ 	return &UseCase{
+ 		feedback: f,
++		llm:      llm,
+ 	}
+ }
+ 
+@@ -65,13 +67,13 @@
+ 	return nil
+ }
+ 
+-func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) ([]model.Review, error) {
+-	data := make(map[int64]User, len(*reviews))
++func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) error {
++	employeeReviews := make(map[int64]User, len(*reviews))
+ 	selfReviews := make(map[int64]User, len(*reviews))
+ 
+ 	for _, review := range *reviews {
+-		if _, ok := data[review.UserID]; !ok {
+-			data[review.UserID] = make(User, 100)
++		if _, ok := employeeReviews[review.UserID]; !ok {
++			employeeReviews[review.UserID] = make(User, 100)
+ 		}
+ 
+ 		if review.UserID == review.ReviewID {
+@@ -80,6 +82,26 @@
+ 			continue
+ 		}
+ 
+-		data[review.UserID][review.ReviewID] = append(data[review.UserID][review.ReviewID], review.Feedback)
++		employeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)
+ 	}
++
++	g, errCtx := errgroup.WithContext(ctx)
++	for index := range employeeReviews {
++		g.Go(func() error {
++			employeeReview := employeeReviews[index]
++
++			selfReview, ok := selfReviews[index]
++			if !ok {
++				selfReview = nil
++			}
++
++			return u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
++		})
++	}
++
++	if err := g.Wait(); err != nil {
++		return err
++	}
++
++	return nil
+ }
+Index: internal/migrations/up/00001_create_all.up.sql
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>create table if not exists \"review\"\n(\n    id        serial primary key,\n    user_id   bigint       not null,\n    review_id bigint       not null,\n    feedback  text         not null,\n    period    varchar(255) not null\n);\n\ncreate table if not exists \"feedback\"\n(\n    id      serial primary key,\n    user_id bigint       not null,\n    score   varchar(255) not null,\n    result  varchar(255) not null,\n    resume  text         not null\n);
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/migrations/up/00001_create_all.up.sql b/internal/migrations/up/00001_create_all.up.sql
+--- a/internal/migrations/up/00001_create_all.up.sql	(revision 2e8cfb2ef577b20c9d11a0095cc27656ab886d8d)
++++ b/internal/migrations/up/00001_create_all.up.sql	(date 1730622357727)
+@@ -10,8 +10,17 @@
+ create table if not exists "feedback"
+ (
+     id      serial primary key,
+-    user_id bigint       not null,
+-    score   varchar(255) not null,
+-    result  varchar(255) not null,
+-    resume  text         not null
++    user_id bigint not null,
++    score   varchar(255),
++    result  varchar(255),
++    resume  text
++);
++
++create table if not exists "self_review"
++(
++    id      serial primary key,
++    user_id bigint not null,
++    score   varchar(255),
++    result  varchar(255),
++    resume  text
+ );
+\ No newline at end of file
+Index: internal/gateway/feedback_llm/gateway.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/gateway/feedback_llm/gateway.go b/internal/gateway/feedback_llm/gateway.go
+new file mode 100644
+--- /dev/null	(date 1730622357750)
++++ b/internal/gateway/feedback_llm/gateway.go	(date 1730622357750)
+@@ -0,0 +1,82 @@
++package feedback_llm
++
++import (
++	"context"
++	"fmt"
++	"golang.org/x/sync/errgroup"
++)
++
++type Gateway struct {
++}
++
++func NewGateway() *Gateway {
++	return &Gateway{}
++}
++
++func (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error {
++	promptEmployee := "Here are some reviews about an employee:\n\n"
++	promptSelf := "Here are some reviews about myself:\n\n"
++
++	gg, errCtx := errgroup.WithContext(ctx)
++
++	gg.Go(func() error {
++		for employeeID, reviews := range employeeReview {
++			promptEmployee += fmt.Sprintf("Review employeeID - %v:\n", employeeID)
++			for ind, review := range reviews {
++				promptEmployee += fmt.Sprintf("%v review: %v\n\n", ind+1, review)
++			}
++		}
++
++		promptEmployee += "Based on these reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\n"
++		promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
++		promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
++
++		return g.getEmployeeFeedback(errCtx, promptEmployee)
++	})
++
++	if selfReview != nil {
++		gg.Go(func() error {
++			for selfID, reviews := range selfReview {
++				promptSelf += fmt.Sprintf("Review selfID - %v:\n\n", selfID)
++				for ind, review := range reviews {
++					promptSelf += fmt.Sprintf("%v review: %v\n\n", ind+1, review)
++				}
++			}
++
++			promptEmployee += "Based on these self reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\n"
++			promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
++			promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
++
++			return g.getSelfFeedback(errCtx, promptEmployee)
++		})
++	}
++
++	if err := gg.Wait(); err != nil {
++		return err
++	}
++
++	return nil
++}
++
++func (g *Gateway) getEmployeeFeedback(ctx context.Context, prompt string) error {
++	data := map[string]interface{}{
++		"prompt":              prompt,
++		"apply_chat_template": true,
++		"system_prompt":       "You are a helpful assistant.",
++		"max_tokens":          400,
++		"n":                   1,
++		"temperature":         0.7,
++	}
++
++}
++
++func (g *Gateway) getSelfFeedback(ctx context.Context, prompt string) error {
++	data := map[string]interface{}{
++		"prompt":              prompt,
++		"apply_chat_template": true,
++		"system_prompt":       "You are a helpful assistant.",
++		"max_tokens":          400,
++		"n":                   1,
++		"temperature":         0.7,
++	}
++}
