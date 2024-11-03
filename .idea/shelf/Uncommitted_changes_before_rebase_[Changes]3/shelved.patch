@@ -1,0 +1,553 @@
+Index: internal/usecase/review/contract.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"context\"\n\n\t\"xaxaton/internal/model\"\n)\n\ntype feedback interface {\n\tCreateReview(ctx context.Context, reviews []model.Review) error\n\tGetReview(ctx context.Context, userId int) ([]model.Review, error)\n}\n\ntype llm interface {\n\tGetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/contract.go b/internal/usecase/review/contract.go
+--- a/internal/usecase/review/contract.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/usecase/review/contract.go	(date 1730625276671)
+@@ -6,11 +6,20 @@
+ 	"xaxaton/internal/model"
+ )
+ 
+-type feedback interface {
++type reviewEmployee interface {
+ 	CreateReview(ctx context.Context, reviews []model.Review) error
+ 	GetReview(ctx context.Context, userId int) ([]model.Review, error)
+ }
+ 
+ type llm interface {
+-	GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error
++	GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) (string, string, error)
++}
++
++type self interface {
++	InsertSelfScore(ctx context.Context, selfReviews []model.SelfReview) error
++	UpdateSelfResume(ctx context.Context, selfReviews []model.SelfReview) error
++}
++
++type feedback interface {
++	CreateFeedback(ctx context.Context, feedbacks []model.Feedback) error
+ }
+Index: internal/usecase/review/review.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"os\"\n\n\t\"golang.org/x/sync/errgroup\"\n\n\t\"xaxaton/internal/model\"\n)\n\ntype UseCase struct {\n\tfeedback feedback\n\tllm      llm\n}\n\nfunc NewUseCase(f feedback, llm llm) *UseCase {\n\treturn &UseCase{\n\t\tfeedback: f,\n\t\tllm:      llm,\n\t}\n}\n\ntype User map[int64][]string\n\nfunc (u *UseCase) ParseJSON(ctx context.Context) error {\n\tplan, err := os.ReadFile(\"internal/usecase/review/review_dataset.json\")\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tvar data []Review\n\n\terr = json.Unmarshal(plan, &data)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tg, ctxErr := errgroup.WithContext(ctx)\n\tg.Go(func() error {\n\t\treturn u.saveToDB(ctxErr, &data)\n\t})\n\n\tif err := g.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {\n\tdata := make([]model.Review, 0, len(*reviews))\n\n\tfor _, review := range *reviews {\n\t\tdata = append(data, model.Review{\n\t\t\tUserID:   review.UserID,\n\t\t\tReviewID: review.ReviewID,\n\t\t\tFeedback: review.Feedback,\n\t\t})\n\t}\n\n\tif err := u.feedback.CreateReview(ctx, data); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) error {\n\temployeeReviews := make(map[int64]User, len(*reviews))\n\tselfReviews := make(map[int64]User, len(*reviews))\n\n\tfor _, review := range *reviews {\n\t\tif _, ok := employeeReviews[review.UserID]; !ok {\n\t\t\temployeeReviews[review.UserID] = make(User, 100)\n\t\t}\n\n\t\tif review.UserID == review.ReviewID {\n\t\t\tselfReviews[review.UserID][review.UserID] = append(selfReviews[review.UserID][review.UserID], review.Feedback)\n\n\t\t\tcontinue\n\t\t}\n\n\t\temployeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)\n\t}\n\n\tg, errCtx := errgroup.WithContext(ctx)\n\tfor index := range employeeReviews {\n\t\tg.Go(func() error {\n\t\t\temployeeReview := employeeReviews[index]\n\n\t\t\tselfReview, ok := selfReviews[index]\n\t\t\tif !ok {\n\t\t\t\tselfReview = nil\n\t\t\t}\n\n\t\t\treturn u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)\n\t\t})\n\t}\n\n\tif err := g.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/review.go b/internal/usecase/review/review.go
+--- a/internal/usecase/review/review.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/usecase/review/review.go	(date 1730629888134)
+@@ -3,7 +3,9 @@
+ import (
+ 	"context"
+ 	"encoding/json"
++	"fmt"
+ 	"os"
++	"xaxaton/internal/lib/parser"
+ 
+ 	"golang.org/x/sync/errgroup"
+ 
+@@ -11,14 +13,18 @@
+ )
+ 
+ type UseCase struct {
+-	feedback feedback
++	review   reviewEmployee
+ 	llm      llm
++	self     self
++	feedback feedback
+ }
+ 
+-func NewUseCase(f feedback, llm llm) *UseCase {
++func NewUseCase(r reviewEmployee, llm llm, s self, f feedback) *UseCase {
+ 	return &UseCase{
+-		feedback: f,
++		review:   r,
+ 		llm:      llm,
++		self:     s,
++		feedback: f,
+ 	}
+ }
+ 
+@@ -42,6 +48,10 @@
+ 		return u.saveToDB(ctxErr, &data)
+ 	})
+ 
++	g.Go(func() error {
++		return u.createFeedbackOne(ctx, &data)
++	})
++
+ 	if err := g.Wait(); err != nil {
+ 		return err
+ 	}
+@@ -60,7 +70,7 @@
+ 		})
+ 	}
+ 
+-	if err := u.feedback.CreateReview(ctx, data); err != nil {
++	if err := u.review.CreateReview(ctx, data); err != nil {
+ 		return err
+ 	}
+ 
+@@ -72,31 +82,67 @@
+ 	selfReviews := make(map[int64]User, len(*reviews))
+ 
+ 	for _, review := range *reviews {
+-		if _, ok := employeeReviews[review.UserID]; !ok {
+-			employeeReviews[review.UserID] = make(User, 100)
+-		}
+-
+ 		if review.UserID == review.ReviewID {
++			if _, ok := selfReviews[review.UserID]; !ok {
++				selfReviews[review.UserID] = make(User, 100)
++			}
++
+ 			selfReviews[review.UserID][review.UserID] = append(selfReviews[review.UserID][review.UserID], review.Feedback)
+ 
+ 			continue
+ 		}
+ 
++		if _, ok := employeeReviews[review.UserID]; !ok {
++			employeeReviews[review.UserID] = make(User, 100)
++		}
++
+ 		employeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)
+ 	}
+ 
+ 	g, errCtx := errgroup.WithContext(ctx)
+-	for index := range employeeReviews {
++	for userID := range employeeReviews {
+ 		g.Go(func() error {
+-			employeeReview := employeeReviews[index]
++			employeeReview := employeeReviews[userID]
+ 
+-			selfReview, ok := selfReviews[index]
++			selfReview, ok := selfReviews[userID]
+ 			if !ok {
+ 				selfReview = nil
+ 			}
+ 
+-			return u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
++			employeeFeedback, selfFeedback, err := u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
++			if err != nil {
++				return err
++			}
++
++			if selfFeedback != "" {
++				selfScore, _ := parser.ParseReview(selfFeedback)
++				err = u.self.InsertSelfScore(ctx, []model.SelfReview{
++					{
++						UserID: userID,
++						Score:  employeeScoreToDB(selfScore),
++					},
++				})
++				if err != nil {
++					return fmt.Errorf("insert employee feed score: %w", err)
++				}
++			}
++
++			employeeScore, _ := parser.ParseReview(employeeFeedback)
++			fmt.Println(employeeScoreToDB(employeeScore), employeeFeedback)
++			err = u.feedback.CreateFeedback(ctx, []model.Feedback{
++				{
++					UserID: userID,
++					Score:  employeeScoreToDB(employeeScore),
++				},
++			})
++
++			if err != nil {
++				return fmt.Errorf("insert employee feed score: %w", err)
++			}
++
++			return nil
+ 		})
++		break
+ 	}
+ 
+ 	if err := g.Wait(); err != nil {
+Index: internal/usecase/review/model.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\ntype Review struct {\n\tUserID   int64  `json:\"ID_under_review\"`\n\tReviewID int64  `json:\"ID_reviewer\"`\n\tFeedback string `json:\"review\"`\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/model.go b/internal/usecase/review/model.go
+--- a/internal/usecase/review/model.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/usecase/review/model.go	(date 1730630251831)
+@@ -1,7 +1,18 @@
+ package review
+ 
++import "strconv"
++
+ type Review struct {
+ 	UserID   int64  `json:"ID_under_review"`
+ 	ReviewID int64  `json:"ID_reviewer"`
+ 	Feedback string `json:"review"`
+ }
++
++func employeeScoreToDB(score map[string]float64) string {
++	result := ""
++	for key, value := range score {
++		result += key + ": " + strconv.FormatFloat(value, 'f', 1, 64) + " "
++	}
++
++	return result
++}
+Index: internal/gateway/feedback_llm/gateway.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package feedback_llm\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"golang.org/x/sync/errgroup\"\n)\n\ntype Gateway struct {\n}\n\nfunc NewGateway() *Gateway {\n\treturn &Gateway{}\n}\n\nfunc (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error {\n\tpromptEmployee := \"Here are some reviews about an employee:\\n\\n\"\n\tpromptSelf := \"Here are some reviews about myself:\\n\\n\"\n\n\tgg, errCtx := errgroup.WithContext(ctx)\n\n\tgg.Go(func() error {\n\t\tfor employeeID, reviews := range employeeReview {\n\t\t\tpromptEmployee += fmt.Sprintf(\"Review employeeID - %v:\\n\", employeeID)\n\t\t\tfor ind, review := range reviews {\n\t\t\t\tpromptEmployee += fmt.Sprintf(\"%v review: %v\\n\\n\", ind+1, review)\n\t\t\t}\n\t\t}\n\n\t\tpromptEmployee += \"Based on these reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\\n\"\n\t\tpromptEmployee += \"1. Professionalism\\n2. Teamwork\\n3. Communication\\n4. Initiative\\n5. Overall Performance\\n\"\n\t\tpromptEmployee += \"Add short (5 sentences) explanation for each score you assigned.\"\n\n\t\treturn g.getEmployeeFeedback(errCtx, promptEmployee)\n\t})\n\n\tif selfReview != nil {\n\t\tgg.Go(func() error {\n\t\t\tfor selfID, reviews := range selfReview {\n\t\t\t\tpromptSelf += fmt.Sprintf(\"Review selfID - %v:\\n\\n\", selfID)\n\t\t\t\tfor ind, review := range reviews {\n\t\t\t\t\tpromptSelf += fmt.Sprintf(\"%v review: %v\\n\\n\", ind+1, review)\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tpromptEmployee += \"Based on these self reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\\n\"\n\t\t\tpromptEmployee += \"1. Professionalism\\n2. Teamwork\\n3. Communication\\n4. Initiative\\n5. Overall Performance\\n\"\n\t\t\tpromptEmployee += \"Add short (5 sentences) explanation for each score you assigned.\"\n\n\t\t\treturn g.getSelfFeedback(errCtx, promptEmployee)\n\t\t})\n\t}\n\n\tif err := gg.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (g *Gateway) getEmployeeFeedback(ctx context.Context, prompt string) error {\n\tdata := map[string]interface{}{\n\t\t\"prompt\":              prompt,\n\t\t\"apply_chat_template\": true,\n\t\t\"system_prompt\":       \"You are a helpful assistant.\",\n\t\t\"max_tokens\":          400,\n\t\t\"n\":                   1,\n\t\t\"temperature\":         0.7,\n\t}\n\n}\n\nfunc (g *Gateway) getSelfFeedback(ctx context.Context, prompt string) error {\n\tdata := map[string]interface{}{\n\t\t\"prompt\":              prompt,\n\t\t\"apply_chat_template\": true,\n\t\t\"system_prompt\":       \"You are a helpful assistant.\",\n\t\t\"max_tokens\":          400,\n\t\t\"n\":                   1,\n\t\t\"temperature\":         0.7,\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/gateway/feedback_llm/gateway.go b/internal/gateway/feedback_llm/gateway.go
+--- a/internal/gateway/feedback_llm/gateway.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/gateway/feedback_llm/gateway.go	(date 1730630032822)
+@@ -1,9 +1,12 @@
+ package feedback_llm
+ 
+ import (
++	"bytes"
+ 	"context"
++	"encoding/json"
+ 	"fmt"
+-	"golang.org/x/sync/errgroup"
++	"io/ioutil"
++	"net/http"
+ )
+ 
+ type Gateway struct {
+@@ -13,52 +16,53 @@
+ 	return &Gateway{}
+ }
+ 
+-func (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error {
++func (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) (string, string, error) {
+ 	promptEmployee := "Here are some reviews about an employee:\n\n"
+ 	promptSelf := "Here are some reviews about myself:\n\n"
+ 
+-	gg, errCtx := errgroup.WithContext(ctx)
++	var reviewSelf string
+ 
+-	gg.Go(func() error {
+-		for employeeID, reviews := range employeeReview {
+-			promptEmployee += fmt.Sprintf("Review employeeID - %v:\n", employeeID)
+-			for ind, review := range reviews {
+-				promptEmployee += fmt.Sprintf("%v review: %v\n\n", ind+1, review)
+-			}
+-		}
++	for employeeID, reviews := range employeeReview {
++		promptEmployee += fmt.Sprintf("Review employeeID - %v:\n", employeeID)
++		for ind, review := range reviews {
++			promptEmployee += fmt.Sprintf("%v review: %v\n\n", ind+1, review)
++		}
++	}
+ 
+-		promptEmployee += "Based on these reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\n"
+-		promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
+-		promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
++	promptEmployee += "Based on these reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\n"
++	promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
++	promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
+ 
+-		return g.getEmployeeFeedback(errCtx, promptEmployee)
+-	})
++	reviewEmployee, err := g.getFeedback(ctx, promptEmployee)
++	if err != nil {
++		return "", "", err
++	}
+ 
+ 	if selfReview != nil {
+-		gg.Go(func() error {
+-			for selfID, reviews := range selfReview {
+-				promptSelf += fmt.Sprintf("Review selfID - %v:\n\n", selfID)
+-				for ind, review := range reviews {
+-					promptSelf += fmt.Sprintf("%v review: %v\n\n", ind+1, review)
+-				}
+-			}
++		for selfID, reviews := range selfReview {
++			promptSelf += fmt.Sprintf("Review selfID - %v:\n\n", selfID)
++			for ind, review := range reviews {
++				promptSelf += fmt.Sprintf("%v review: %v\n\n", ind+1, review)
++			}
++		}
+ 
+-			promptEmployee += "Based on these self reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\n"
+-			promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
+-			promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
++		promptEmployee += "Based on these self reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\n"
++		promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
++		promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
+ 
+-			return g.getSelfFeedback(errCtx, promptEmployee)
+-		})
+-	}
+-
+-	if err := gg.Wait(); err != nil {
+-		return err
++		reviewSelf, err = g.getFeedback(ctx, promptEmployee)
++		if err != nil {
++			return "", "", err
++		}
+ 	}
+ 
+-	return nil
++	return reviewEmployee, reviewSelf, nil
+ }
+ 
+-func (g *Gateway) getEmployeeFeedback(ctx context.Context, prompt string) error {
++func (g *Gateway) getFeedback(ctx context.Context, prompt string) (string, error) {
++	URL := "https://vk-scoreworker-case-backup.olymp.innopolis.university/generate"
++
++	fmt.Println(prompt, "\n\n\n")
+ 	data := map[string]interface{}{
+ 		"prompt":              prompt,
+ 		"apply_chat_template": true,
+@@ -68,15 +72,33 @@
+ 		"temperature":         0.7,
+ 	}
+ 
+-}
++	marshalData, err := json.Marshal(data)
++	if err != nil {
++		return "", err
++	}
+ 
+-func (g *Gateway) getSelfFeedback(ctx context.Context, prompt string) error {
+-	data := map[string]interface{}{
+-		"prompt":              prompt,
+-		"apply_chat_template": true,
+-		"system_prompt":       "You are a helpful assistant.",
+-		"max_tokens":          400,
+-		"n":                   1,
+-		"temperature":         0.7,
++	r := bytes.NewReader(marshalData)
++
++	request, err := http.NewRequestWithContext(ctx, "POST", URL, r)
++	if err != nil {
++		return "", err
+ 	}
++
++	request.Header.Set("Content-Type", "application/json")
++
++	response, err := http.DefaultClient.Do(request)
++	if err != nil {
++		return "", err
++	}
++
++	if response.StatusCode != http.StatusOK {
++		return "", fmt.Errorf("response status: %s", response.Status)
++	}
++
++	responseData, err := ioutil.ReadAll(response.Body)
++	if err != nil {
++		return "", err
++	}
++
++	return string(responseData), nil
+ }
+Index: cmd/prepare/main.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package main\n\nimport (\n\t\"context\"\n\n\t\"github.com/gofiber/fiber/v2/log\"\n\n\tconfigure \"xaxaton/internal/configure\"\n\t\"xaxaton/internal/repo/review\"\n\treviewUC \"xaxaton/internal/usecase/review\"\n)\n\nfunc main() {\n\tlog.Info(\"worker prepare is started\")\n\n\tctx := context.Background()\n\n\tcfg := configure.MustConfig(nil)\n\n\tdbpool := configure.NewPostgres(ctx, cfg.Postgres)\n\tdefer dbpool.Close()\n\n\t// Repo layer\n\t//feedbackDB := feedback.New(dbpool)\n\treviewDB := review.New(dbpool)\n\n\t// UseCase layer\n\treviewData := reviewUC.NewUseCase(reviewDB)\n\n\tif err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != \"no change\" {\n\t\tpanic(err)\n\t}\n\n\tif err := reviewData.ParseJSON(ctx); err != nil {\n\t\tpanic(err)\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/cmd/prepare/main.go b/cmd/prepare/main.go
+--- a/cmd/prepare/main.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/cmd/prepare/main.go	(date 1730625355813)
+@@ -6,7 +6,10 @@
+ 	"github.com/gofiber/fiber/v2/log"
+ 
+ 	configure "xaxaton/internal/configure"
++	"xaxaton/internal/gateway/feedback_llm"
++	"xaxaton/internal/repo/feedback"
+ 	"xaxaton/internal/repo/review"
++	"xaxaton/internal/repo/self_review"
+ 	reviewUC "xaxaton/internal/usecase/review"
+ )
+ 
+@@ -21,11 +24,15 @@
+ 	defer dbpool.Close()
+ 
+ 	// Repo layer
+-	//feedbackDB := feedback.New(dbpool)
++	feedbackDB := feedback.New(dbpool)
+ 	reviewDB := review.New(dbpool)
++	selfDB := self_review.New(dbpool)
++
++	// Gateway layer
++	llmGW := feedback_llm.NewGateway()
+ 
+ 	// UseCase layer
+-	reviewData := reviewUC.NewUseCase(reviewDB)
++	reviewData := reviewUC.NewUseCase(reviewDB, llmGW, selfDB, feedbackDB)
+ 
+ 	if err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != "no change" {
+ 		panic(err)
+Index: internal/lib/parser/review_test.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package parser\n\nimport (\n\t\"github.com/stretchr/testify/require\"\n\t\"testing\"\n)\n\nfunc TestParseReview(t *testing.T) {\n\ttests := []struct {\n\t\tname       string\n\t\ttext       string\n\t\twantScores map[string]float64\n\t\twantDesc   map[string]string\n\t}{\n\t\t{\n\t\t\tname: \"base\",\n\t\t\ttext: \"\\\"Based on the reviews,\" +\n\t\t\t\t\" I'll evaluate the employee on the given criteria.\" +\n\t\t\t\t\" Here are my assessments:\\\\n\\\\n**Professionalism: \" +\n\t\t\t\t\"5/5**\\\\nThe employee consistently demonstrates a high \" +\n\t\t\t\t\"level of professionalism, as mentioned in Review 1,\" +\n\t\t\t\t\" where they are described as having a \\\\\\\"высокий \" +\n\t\t\t\t\"уровень профессионализма\\\\\\\" (high level of\" +\n\t\t\t\t\" professionalism). Review 5 also highlights their\" +\n\t\t\t\t\" exceptional programming skills, calling them the \" +\n\t\t\t\t\"\\\\\\\"лучший программист эвер\\\\\\\" (best programmer ever).\" +\n\t\t\t\t\" The employee's ability to provide logical explanations\" +\n\t\t\t\t\" for their decisions, as mentioned in Review 1,\" +\n\t\t\t\t\" further supports their professionalism. Their expertise is \" +\n\t\t\t\t\"evident in their work, and they maintain a professional demeanor.\" +\n\t\t\t\t\" Overall, the employee's professionalism is outstanding.\" +\n\t\t\t\t\"\\\\n\\\\n**Teamwork: 4.5/5**\\\\nReview 4 highlights the employee's \" +\n\t\t\t\t\"\\\\\\\"командную работу\\\\\\\" (teamwork), indicating that they are\" +\n\t\t\t\t\" able to collaborate effectively with others. Additionally, Review 1 mentions that the employee is always willing to help and provide answers to questions, which suggests that they are a team player. However, Review 3 expresses a desire for more proactive approach, which might indicate some room for improvement in this area. Nevertheless, the overall sentiment suggests that the employee is a strong team player. The only reason I'm not giving a 5 is that there is a faint criticism in Review 3.\\\\n\\\\n**Communication: 5**\\\\nThe employee's communication skills are consistently praised across the reviews. Review 1 highlights their ability to provide clear and logical explanations, while Review 4 mentions their \\\\\\\"открытость к диалогу\\\\\\\" (openness to dialogue). The employee's responsiveness and willingness to help, as mentioned in Review 1, also demonstrate their strong communication skills. Additionally, Review 5 expresses appreciation for the employee's excellent communication style. Overall, the employee's communication skills are exceptional.\\\\n\\\\n**Initiative: 3/5**\\\\nWhile Review 4 mentions the employee's \\\\\\\"нацеленность на результат\\\\\\\" (focus on results), Review 3\\\"\",\n\t\t\twantScores: map[string]float64{\"Communication\": 5, \"Professionalism\": 5, \"Teamwork\": 4.5, \"Initiative\": 3},\n\t\t},\n\t\t{\n\t\t\tname:       \"short\",\n\t\t\ttext:       \"Wow**Proffesionalism:5**gdsfd. ahhsdfh**Ink: 4.5**, gaa\",\n\t\t\twantScores: map[string]float64{\"Proffesionalism\": 5, \"Ink\": 4.5},\n\t\t\twantDesc:   map[string]string{\"Proffesionalism\": \"gdsfd. ahhsdfh\", \"Ink\": \", gaa\"},\n\t\t},\n\t}\n\tfor _, tt := range tests {\n\t\tt.Run(tt.name, func(t *testing.T) {\n\t\t\tscores, desc := ParseReview(tt.text)\n\t\t\tif tt.wantScores != nil {\n\t\t\t\trequire.Equal(t, tt.wantScores, scores)\n\t\t\t}\n\t\t\tif tt.wantDesc != nil {\n\t\t\t\trequire.Equal(t, tt.wantDesc, desc)\n\t\t\t}\n\n\t\t})\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/lib/parser/review_test.go b/internal/lib/parser/review_test.go
+--- a/internal/lib/parser/review_test.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/lib/parser/review_test.go	(date 1730630392196)
+@@ -35,6 +35,12 @@
+ 			wantScores: map[string]float64{"Communication": 5, "Professionalism": 5, "Teamwork": 4.5, "Initiative": 3},
+ 		},
+ 		{
++			name:       "all",
++			text:       "Based on the reviews, I'll evaluate the employees on the given criteria. Please note that the reviews are not labeled with specific employee names, so I'll provide a general evaluation for each employee ID.\\n\\n**Employee ID - 59595**\\n1. Professionalism: 5\\nThe employee demonstrates deep expertise in technical and organizational aspects of the company and can find solutions to complex situations. Their knowledge and experience are highly valued by colleagues. They provide valuable feedback and suggestions, and their involvement in projects is highly appreciated. Their professionalism is evident in their ability to balance security, timelines, and comfort of work. Overall, they are considered an expert in their field.\\n\\n2. Teamwork: 5\\nThe employee is praised for their ability to work collaboratively with colleagues, finding compromises and solutions that benefit everyone. They are willing to help and provide guidance, making them a valuable team player. Their involvement in team projects is highly appreciated, and they are able to bring people together to achieve common goals. They demonstrate a strong sense of responsibility and accountability. Their team-oriented approach is evident in their ability to find mutually beneficial solutions.\\n\\n3. Communication: 5\\nThe employee is commended for their excellent communication skills, being able to explain complex issues in a clear and concise manner. They are approachable, open, and willing to listen to others. Their communication style is constructive, and they are able to find common ground with colleagues. They are able to articulate their thoughts and opinions effectively, making them an effective communicator. Their ability to communicate technical information to non-technical colleagues is particularly valued.\\n\\n4. Initiative: 5\\nThe employee is praised for their proactive approach, taking the initiative to find solutions to problems and improve processes. They are willing to take on new challenges and are not afraid to think outside the box. Their creativity and resourcefulness are highly valued by colleagues. They demonstrate a strong sense of ownership and accountability, taking charge of projects and seeing them through to completion. Their willingness to",
++			wantDesc:   map[string]string{},
++			wantScores: map[string]float64{},
++		},
++		{
+ 			name:       "short",
+ 			text:       "Wow**Proffesionalism:5**gdsfd. ahhsdfh**Ink: 4.5**, gaa",
+ 			wantScores: map[string]float64{"Proffesionalism": 5, "Ink": 4.5},
+Index: internal/lib/parser/review.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package parser\n\nimport (\n\t\"fmt\"\n\t\"strconv\"\n\t\"strings\"\n)\n\nfunc ParseReview(text string) (map[string]float64, map[string]string) {\n\tconst op = \"parser.ParseReview\"\n\n\tsections := strings.Split(text, \"**\")\n\n\tscores := make(map[string]float64)\n\ttexts := make(map[string]string)\n\n\tfor i := 1; i < len(sections); i += 2 {\n\t\tsection := strings.TrimSpace(sections[i])\n\n\t\tcolonIndex := strings.Index(section, \":\")\n\t\tif colonIndex == -1 {\n\t\t\tcontinue\n\t\t}\n\t\tcategory := strings.TrimSpace(section[:colonIndex])\n\t\tscoreText := strings.TrimSpace(section[colonIndex+1:])\n\n\t\t// Проверяем, есть ли \"/\"\n\t\tvar score string\n\t\tif strings.Contains(scoreText, \"/\") {\n\t\t\tscoreEnd := strings.Index(scoreText, \"/\")\n\t\t\tscore = scoreText[:scoreEnd] // Получаем только часть до \"/\"\n\t\t} else {\n\t\t\tscore = scoreText // Если нет \"/\", берем всю строку\n\t\t}\n\t\t// Преобразуем оценку в float64\n\t\tscore = strings.TrimSpace(score) // Убираем лишние пробелы\n\t\tscoreFloat, err := strconv.ParseFloat(score, 64)\n\t\tif err != nil {\n\t\t\tfmt.Printf(\"Ошибка при преобразовании оценки для категории %s: %v\\n\", category, err)\n\t\t\tcontinue\n\t\t}\n\n\t\t// Сохраняем категорию и её оценку\n\t\tscores[category] = scoreFloat\n\n\t\tif i+1 < len(sections) {\n\t\t\ttexts[category] = strings.TrimSpace(sections[i+1])\n\t\t}\n\t}\n\n\treturn scores, texts\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/lib/parser/review.go b/internal/lib/parser/review.go
+--- a/internal/lib/parser/review.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/lib/parser/review.go	(date 1730624870855)
+@@ -7,8 +7,6 @@
+ )
+ 
+ func ParseReview(text string) (map[string]float64, map[string]string) {
+-	const op = "parser.ParseReview"
+-
+ 	sections := strings.Split(text, "**")
+ 
+ 	scores := make(map[string]float64)
+Index: cmd/service/main.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package main\n\nimport (\n\t\"context\"\n\t\"strings\"\n\n\t\"github.com/gofiber/fiber/v2\"\n\t\"github.com/gofiber/fiber/v2/middleware/cors\"\n\t\"github.com/gofiber/fiber/v2/middleware/logger\"\n\n\tconfigure \"xaxaton/internal/configure\"\n\t\"xaxaton/internal/repo/review\"\n\treviewUC \"xaxaton/internal/usecase/review\"\n)\n\nfunc main() {\n\tapp := fiber.New()\n\tapp.Use(logger.New())\n\tapp.Use(\n\t\tcors.New(\n\t\t\tcors.Config{\n\t\t\t\tNext:             nil,\n\t\t\t\tAllowOriginsFunc: nil,\n\t\t\t\tAllowOrigins:     \"*\",\n\t\t\t\tAllowMethods: strings.Join([]string{\n\t\t\t\t\tfiber.MethodGet,\n\t\t\t\t\tfiber.MethodPost,\n\t\t\t\t\tfiber.MethodHead,\n\t\t\t\t\tfiber.MethodPut,\n\t\t\t\t\tfiber.MethodDelete,\n\t\t\t\t\tfiber.MethodPatch,\n\t\t\t\t}, \",\"),\n\t\t\t\tAllowCredentials: false,\n\t\t\t\tMaxAge:           0,\n\t\t\t},\n\t\t),\n\t)\n\n\tctx := context.Background()\n\n\tcfg := configure.MustConfig(nil)\n\n\tdbpool := configure.NewPostgres(ctx, cfg.Postgres)\n\tdefer dbpool.Close()\n\n\t// Repo layer\n\t//feedbackDB := feedback.New(dbpool)\n\treviewDB := review.New(dbpool)\n\n\t// UseCase layer\n\treviewData := reviewUC.NewUseCase(reviewDB)\n\n\tif err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != \"no change\" {\n\t\tpanic(err)\n\t}\n\n\tgo func() {\n\t\tif err := reviewData.ParseJSON(ctx); err != nil {\n\t\t\tpanic(err)\n\t\t}\n\t}()\n\n\tif err := app.Listen(cfg.Fiber.String()); err != nil {\n\t\tpanic(\"app not start\")\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/cmd/service/main.go b/cmd/service/main.go
+--- a/cmd/service/main.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/cmd/service/main.go	(date 1730625102824)
+@@ -2,15 +2,12 @@
+ 
+ import (
+ 	"context"
+-	"strings"
+-
+ 	"github.com/gofiber/fiber/v2"
+ 	"github.com/gofiber/fiber/v2/middleware/cors"
+ 	"github.com/gofiber/fiber/v2/middleware/logger"
++	"strings"
+ 
+ 	configure "xaxaton/internal/configure"
+-	"xaxaton/internal/repo/review"
+-	reviewUC "xaxaton/internal/usecase/review"
+ )
+ 
+ func main() {
+@@ -43,22 +40,9 @@
+ 	dbpool := configure.NewPostgres(ctx, cfg.Postgres)
+ 	defer dbpool.Close()
+ 
+-	// Repo layer
+-	//feedbackDB := feedback.New(dbpool)
+-	reviewDB := review.New(dbpool)
+-
+-	// UseCase layer
+-	reviewData := reviewUC.NewUseCase(reviewDB)
+-
+ 	if err := cfg.Postgres.MigrationsUp(); err != nil && err.Error() != "no change" {
+ 		panic(err)
+ 	}
+-
+-	go func() {
+-		if err := reviewData.ParseJSON(ctx); err != nil {
+-			panic(err)
+-		}
+-	}()
+ 
+ 	if err := app.Listen(cfg.Fiber.String()); err != nil {
+ 		panic("app not start")
+Index: internal/repo/self_review/self_review.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package self_review\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\n\t\"github.com/jackc/pgx/v4\"\n\t\"github.com/jackc/pgx/v4/pgxpool\"\n\n\t\"xaxaton/internal/model\"\n)\n\ntype Storage struct {\n\tpool *pgxpool.Pool\n}\n\nfunc New(pool *pgxpool.Pool) *Storage {\n\treturn &Storage{\n\t\tpool: pool,\n\t}\n}\n\nfunc (s *Storage) CreateSelfReview(ctx context.Context,\n\tself_reviews []model.SelfReview,\n) error {\n\tconst op = \"repo.CreateSelfReview\"\n\n\tbatch := &pgx.Batch{}\n\tquery := `INSERT INTO self_review (user_id, score, result, resume) VALUES ($1, $2, $3, $4)`\n\n\tfor _, self_review := range self_reviews {\n\t\tbatch.Queue(query, self_review.UserID, self_review.Score, self_review.Result, self_review.Resume)\n\t}\n\n\ttx, err := s.pool.Begin(ctx)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"%s:%w\", op, err)\n\t}\n\tdefer tx.Rollback(ctx)\n\n\tbr := tx.SendBatch(ctx, batch)\n\tif err = br.Close(); err != nil {\n\t\treturn fmt.Errorf(\"%s: %w\", err)\n\t}\n\n\terr = tx.Commit(ctx)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"%s:%w\", op, err)\n\t}\n\n\treturn nil\n}\n\nfunc (s *Storage) GetSelfReviews(ctx context.Context,\n\tuserId int,\n) ([]model.SelfReview, error) {\n\tconst op = \"repo.GetSelfReviews\"\n\n\tvar (\n\t\tquery = `\n\t\tSELECT user_id, score, result, resume\n\t\tFROM self_review\n\t\tWHERE user_id = $1\n\t`\n\t\tselfReviews []model.SelfReview\n\t)\n\n\trows, err := s.pool.Query(ctx, query, userId)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%s: %w\", op, err)\n\t}\n\tdefer rows.Close()\n\n\tfor rows.Next() {\n\t\tvar self_review model.SelfReview\n\t\tif err = rows.Scan(&self_review.UserID, &self_review.Score, &self_review.Result, &self_review.Resume); err != nil {\n\t\t\treturn nil, fmt.Errorf(\"%s: %w\", op, err)\n\t\t}\n\t\tselfReviews = append(selfReviews, self_review)\n\t}\n\n\tif err = rows.Err(); err != nil {\n\t\treturn nil, fmt.Errorf(\"%s: %w\", op, err)\n\t}\n\n\treturn selfReviews, nil\n}\n\nfunc (s *Storage) InsertSelfScore(ctx context.Context,\n\tself_reviews []model.SelfReview,\n) error {\n\tconst op = \"repo.InsertSelfScore\"\n\n\tbatch := &pgx.Batch{}\n\tquery := `INSERT INTO self_review (user_id, score) VALUES ($1, $2)`\n\n\tfor _, self_review := range self_reviews {\n\t\tbatch.Queue(query, self_review.UserID, self_review.Score)\n\t}\n\n\ttx, err := s.pool.Begin(ctx)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"%s:%w\", op, err)\n\t}\n\tdefer tx.Rollback(ctx)\n\n\tbr := tx.SendBatch(ctx, batch)\n\tif err = br.Close(); err != nil {\n\t\treturn fmt.Errorf(\"%s: %w\", err)\n\t}\n\n\terr = tx.Commit(ctx)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"%s:%w\", op, err)\n\t}\n\n\treturn nil\n}\n\nfunc (s *Storage) UpdateSelfResume(ctx context.Context,\n\tself_reviews []model.SelfReview,\n) error {\n\tconst op = \"repo.UpdateSelfResume\"\n\n\tvar (\n\t\tquery = `\n\t\t\tUPDATE self_review\n\t\t\tSET result = $2, resume = $3\n\t\t\tWHERE user_id = $1\n\t\t`\n\t)\n\n\tbatch := &pgx.Batch{}\n\n\tfor _, self_review := range self_reviews {\n\t\tbatch.Queue(query, self_review.UserID, self_review.Result, self_review.Resume)\n\t}\n\tbr := s.pool.SendBatch(ctx, batch)\n\tdefer br.Close()\n\n\tfor range self_reviews {\n\t\tif _, err := br.Exec(); err != nil {\n\t\t\treturn fmt.Errorf(\"%s: %w\", op, err)\n\t\t}\n\t}\n\n\treturn nil\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/repo/self_review/self_review.go b/internal/repo/self_review/self_review.go
+--- a/internal/repo/self_review/self_review.go	(revision f00a9c8f53b15b322108637088e61b95a2021c72)
++++ b/internal/repo/self_review/self_review.go	(date 1730624870853)
+@@ -21,14 +21,14 @@
+ }
+ 
+ func (s *Storage) CreateSelfReview(ctx context.Context,
+-	self_reviews []model.SelfReview,
++	selfReviews []model.SelfReview,
+ ) error {
+ 	const op = "repo.CreateSelfReview"
+ 
+ 	batch := &pgx.Batch{}
+ 	query := `INSERT INTO self_review (user_id, score, result, resume) VALUES ($1, $2, $3, $4)`
+ 
+-	for _, self_review := range self_reviews {
++	for _, self_review := range selfReviews {
+ 		batch.Queue(query, self_review.UserID, self_review.Score, self_review.Result, self_review.Resume)
+ 	}
+ 
+@@ -87,14 +87,14 @@
+ }
+ 
+ func (s *Storage) InsertSelfScore(ctx context.Context,
+-	self_reviews []model.SelfReview,
++	selfReviews []model.SelfReview,
+ ) error {
+ 	const op = "repo.InsertSelfScore"
+ 
+ 	batch := &pgx.Batch{}
+ 	query := `INSERT INTO self_review (user_id, score) VALUES ($1, $2)`
+ 
+-	for _, self_review := range self_reviews {
++	for _, self_review := range selfReviews {
+ 		batch.Queue(query, self_review.UserID, self_review.Score)
+ 	}
+ 
+@@ -118,7 +118,7 @@
+ }
+ 
+ func (s *Storage) UpdateSelfResume(ctx context.Context,
+-	self_reviews []model.SelfReview,
++	selfReviews []model.SelfReview,
+ ) error {
+ 	const op = "repo.UpdateSelfResume"
+ 
+@@ -132,13 +132,13 @@
+ 
+ 	batch := &pgx.Batch{}
+ 
+-	for _, self_review := range self_reviews {
++	for _, self_review := range selfReviews {
+ 		batch.Queue(query, self_review.UserID, self_review.Result, self_review.Resume)
+ 	}
+ 	br := s.pool.SendBatch(ctx, batch)
+ 	defer br.Close()
+ 
+-	for range self_reviews {
++	for range selfReviews {
+ 		if _, err := br.Exec(); err != nil {
+ 			return fmt.Errorf("%s: %w", op, err)
+ 		}

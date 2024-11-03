@@ -3,7 +3,9 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"xaxaton/internal/lib/parser"
 
 	"golang.org/x/sync/errgroup"
 
@@ -11,14 +13,18 @@ import (
 )
 
 type UseCase struct {
-	feedback feedback
+	review   reviewEmployee
 	llm      llm
+	self     self
+	feedback feedback
 }
 
-func NewUseCase(f feedback, llm llm) *UseCase {
+func NewUseCase(r reviewEmployee, llm llm, s self, f feedback) *UseCase {
 	return &UseCase{
-		feedback: f,
+		review:   r,
 		llm:      llm,
+		self:     s,
+		feedback: f,
 	}
 }
 
@@ -42,6 +48,10 @@ func (u *UseCase) ParseJSON(ctx context.Context) error {
 		return u.saveToDB(ctxErr, &data)
 	})
 
+	g.Go(func() error {
+		return u.createFeedbackOne(ctx, &data)
+	})
+
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -60,7 +70,7 @@ func (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {
 		})
 	}
 
-	if err := u.feedback.CreateReview(ctx, data); err != nil {
+	if err := u.review.CreateReview(ctx, data); err != nil {
 		return err
 	}
 
@@ -72,31 +82,67 @@ func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) erro
 	selfReviews := make(map[int64]User, len(*reviews))
 
 	for _, review := range *reviews {
-		if _, ok := employeeReviews[review.UserID]; !ok {
-			employeeReviews[review.UserID] = make(User, 100)
-		}
-
 		if review.UserID == review.ReviewID {
+			if _, ok := selfReviews[review.UserID]; !ok {
+				selfReviews[review.UserID] = make(User, 100)
+			}
+
 			selfReviews[review.UserID][review.UserID] = append(selfReviews[review.UserID][review.UserID], review.Feedback)
 
 			continue
+		}
+
+		if _, ok := employeeReviews[review.UserID]; !ok {
+			employeeReviews[review.UserID] = make(User, 100)
 		}
 
 		employeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)
 	}
 
 	g, errCtx := errgroup.WithContext(ctx)
-	for index := range employeeReviews {
+	for userID := range employeeReviews {
 		g.Go(func() error {
-			employeeReview := employeeReviews[index]
+			employeeReview := employeeReviews[userID]
 
-			selfReview, ok := selfReviews[index]
+			selfReview, ok := selfReviews[userID]
 			if !ok {
 				selfReview = nil
 			}
 
-			return u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
+			employeeFeedback, selfFeedback, err := u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
+			if err != nil {
+				return err
+			}
+
+			if selfFeedback != "" {
+				selfScore, _ := parser.ParseReview(selfFeedback)
+				err = u.self.InsertSelfScore(ctx, []model.SelfReview{
+					{
+						UserID: userID,
+						Score:  employeeScoreToDB(selfScore),
+					},
+				})
+				if err != nil {
+					return fmt.Errorf("insert employee feed score: %w", err)
+				}
+			}
+
+			employeeScore, _ := parser.ParseReview(employeeFeedback)
+			fmt.Println(employeeScoreToDB(employeeScore), employeeFeedback)
+			err = u.feedback.CreateFeedback(ctx, []model.Feedback{
+				{
+					UserID: userID,
+					Score:  employeeScoreToDB(employeeScore),
+				},
+			})
+
+			if err != nil {
+				return fmt.Errorf("insert employee feed score: %w", err)
+			}
+
+			return nil
 		})
+		break
 	}
 
 	if err := g.Wait(); err != nil {
