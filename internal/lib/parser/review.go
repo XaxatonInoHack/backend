@@ -2,52 +2,87 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-func ParseReview(text string) (map[string]float64, map[string]string) {
-	sections := strings.Split(text, "**")
+func ParseScoreOnly(text string) map[string]float64 {
+	// Регулярное выражение для поиска строк с оценками
+	re := regexp.MustCompile(`(?m)^\d+\.\s*(\w+):\s*([\d\.]+)`)
 
-	scores := make(map[string]float64)
-	texts := make(map[string]string)
+	// Находим все совпадения в тексте
+	matches := re.FindAllStringSubmatch(text, -1)
 
-	for i := 1; i < len(sections); i += 2 {
-		section := strings.TrimSpace(sections[i])
+	// Инициализируем карту для хранения результатов
+	result := make(map[string]float64)
 
-		colonIndex := strings.Index(section, ":")
-		if colonIndex == -1 {
-			continue
-		}
-		dotIndex := strings.Index(section, ".")
-		category := strings.TrimSpace(section[dotIndex+1 : colonIndex])
-		category = strings.TrimSpace(category)
-
-		scoreText := strings.TrimSpace(section[colonIndex+1:])
-
-		// Проверяем, есть ли "/"
-		var score string
-		if strings.Contains(scoreText, "/") {
-			scoreEnd := strings.Index(scoreText, "/")
-			score = scoreText[:scoreEnd] // Получаем только часть до "/"
-		} else {
-			score = scoreText // Если нет "/", берем всю строку
-		}
-		// Преобразуем оценку в float64
-		score = strings.TrimSpace(score) // Убираем лишние пробелы
-		scoreFloat, err := strconv.ParseFloat(score, 64)
+	// Проходим по всем найденным совпадениям и заполняем карту
+	for _, match := range matches {
+		category := match[1]
+		scoreStr := match[2]
+		score, err := strconv.ParseFloat(scoreStr, 64)
 		if err != nil {
-			fmt.Printf("Ошибка при преобразовании оценки для категории %s: %v\n", category, err)
+			fmt.Println("Ошибка при парсинге оценки:", err)
 			continue
 		}
-
-		// Сохраняем категорию и её оценку
-		scores[category] = scoreFloat
-
-		if i+1 < len(sections) {
-			texts[category] = strings.TrimSpace(sections[i+1])
-		}
+		result[category] = score
 	}
 
-	return scores, texts
+	return result
+}
+
+func ParseCategoryTexts(text string) map[string]string {
+	// Регулярное выражение для поиска заголовков категорий
+	re := regexp.MustCompile(`(?m)^(\d+)\.\s*([A-Za-zА-Яа-яёЁ ]+):\s*\d+\.?\d*`)
+
+	// Находим все заголовки категорий с их позициями в тексте
+	matches := re.FindAllStringSubmatchIndex(text, -1)
+
+	result := make(map[string]string)
+
+	// Поиск позиции раздела "Overall resume"
+	overallIndex := strings.Index(strings.ToLower(text), "overall resume:")
+	var overallContent string
+	if overallIndex != -1 {
+		overallContent = strings.TrimSpace(text[overallIndex+len("Overall resume:"):])
+		// Обрезаем текст до начала "Overall resume"
+		text = text[:overallIndex]
+	}
+
+	for i, match := range matches {
+		// Получаем название категории
+		categoryStart, categoryEnd := match[4], match[5]
+		category := strings.TrimSpace(text[categoryStart:categoryEnd])
+
+		// Определяем начало контента после заголовка
+		contentStart := match[1]
+		var contentEnd int
+		if i+1 < len(matches) {
+			// Если есть следующая категория, контент заканчивается перед ней
+			contentEnd = matches[i+1][0]
+		} else {
+			// Если это последняя категория, контент идет до конца текста
+			contentEnd = len(text)
+		}
+
+		// Извлекаем контент между заголовками
+		content := text[contentStart:contentEnd]
+
+		// Удаляем первую строку (заголовок) из контента
+		lines := strings.SplitN(content, "\n", 2)
+		if len(lines) >= 2 {
+			content = strings.TrimSpace(lines[1])
+		} else {
+			content = ""
+		}
+
+		result[category] = content
+	}
+
+	if overallContent != "" {
+		result["Overall resume"] = overallContent
+	}
+
+	return result
 }

@@ -3,6 +3,7 @@ package feedback
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -52,7 +53,7 @@ func (s *Storage) CreateFeedback(ctx context.Context,
 }
 
 func (s *Storage) GetFeedback(ctx context.Context,
-	userId int,
+	userId int64,
 ) ([]model.Feedback, error) {
 	const op = "repo.GetFeedback"
 
@@ -84,6 +85,56 @@ func (s *Storage) GetFeedback(ctx context.Context,
 	}
 
 	return feedbacks, nil
+}
+
+func (s *Storage) GetFeedbackAll(ctx context.Context,
+	userIDs []int64,
+) (map[int64]model.Feedback, error) {
+	const op = "repo.GetFeedbackAll"
+
+	// Проверяем, что срез userIDs не пуст
+	if len(userIDs) == 0 {
+		return nil, fmt.Errorf("%s: no user IDs provided", op)
+	}
+
+	// Генерируем плейсхолдеры для запроса
+	placeholders := make([]string, len(userIDs))
+	args := make([]interface{}, len(userIDs))
+	for i, id := range userIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	// Формируем запрос с использованием плейсхолдеров
+	query := fmt.Sprintf(`
+        SELECT user_id, score, result, resume
+        FROM feedback
+        WHERE user_id IN (%s)
+    `, strings.Join(placeholders, ", "))
+
+	// Инициализируем карту для результатов
+	feedbacksMap := make(map[int64]model.Feedback)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var feedback model.Feedback
+		if err = rows.Scan(&feedback.UserID, &feedback.Score, &feedback.Result, &feedback.Resume); err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		// Добавляем feedback в карту, перезаписывая предыдущий, если такой уже есть
+		feedbacksMap[feedback.UserID] = feedback
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+
+	return feedbacksMap, nil
 }
 
 func (s *Storage) InsertScore(ctx context.Context,
@@ -125,7 +176,7 @@ func (s *Storage) UpdateResume(ctx context.Context,
 	var (
 		query = `
 			UPDATE feedback
-			SET result = $2, resume = $3
+			SET result = $2, resume = $3, score = $4
 			WHERE user_id = $1
 		`
 	)
@@ -133,7 +184,7 @@ func (s *Storage) UpdateResume(ctx context.Context,
 	batch := &pgx.Batch{}
 
 	for _, feedback := range feedbacks {
-		batch.Queue(query, feedback.UserID, feedback.Result, feedback.Resume)
+		batch.Queue(query, feedback.UserID, feedback.Result, feedback.Resume, feedback.Score)
 	}
 	br := s.pool.SendBatch(ctx, batch)
 	defer br.Close()
