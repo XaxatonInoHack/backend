@@ -12,11 +12,13 @@ import (
 
 type UseCase struct {
 	feedback feedback
+	llm      llm
 }
 
-func NewUseCase(f feedback) *UseCase {
+func NewUseCase(f feedback, llm llm) *UseCase {
 	return &UseCase{
 		feedback: f,
+		llm:      llm,
 	}
 }
 
@@ -65,13 +67,13 @@ func (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {
 	return nil
 }
 
-func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) ([]model.Review, error) {
-	data := make(map[int64]User, len(*reviews))
+func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) error {
+	employeeReviews := make(map[int64]User, len(*reviews))
 	selfReviews := make(map[int64]User, len(*reviews))
 
 	for _, review := range *reviews {
-		if _, ok := data[review.UserID]; !ok {
-			data[review.UserID] = make(User, 100)
+		if _, ok := employeeReviews[review.UserID]; !ok {
+			employeeReviews[review.UserID] = make(User, 100)
 		}
 
 		if review.UserID == review.ReviewID {
@@ -80,6 +82,26 @@ func (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) ([]m
 			continue
 		}
 
-		data[review.UserID][review.ReviewID] = append(data[review.UserID][review.ReviewID], review.Feedback)
+		employeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)
 	}
+
+	g, errCtx := errgroup.WithContext(ctx)
+	for index := range employeeReviews {
+		g.Go(func() error {
+			employeeReview := employeeReviews[index]
+
+			selfReview, ok := selfReviews[index]
+			if !ok {
+				selfReview = nil
+			}
+
+			return u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	return nil
 }

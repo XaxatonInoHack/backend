@@ -10,8 +10,17 @@ create table if not exists "review"
 create table if not exists "feedback"
 (
     id      serial primary key,
-    user_id bigint       not null,
-    score   varchar(255) not null,
-    result  varchar(255) not null,
-    resume  text         not null
+    user_id bigint not null,
+    score   varchar(255),
+    result  varchar(255),
+    resume  text
+);
+
+create table if not exists "self_review"
+(
+    id      serial primary key,
+    user_id bigint not null,
+    score   varchar(255),
+    result  varchar(255),
+    resume  text
 );
