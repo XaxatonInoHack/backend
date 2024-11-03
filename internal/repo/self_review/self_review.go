@@ -21,14 +21,14 @@ func New(pool *pgxpool.Pool) *Storage {
 }
 
 func (s *Storage) CreateSelfReview(ctx context.Context,
-	self_reviews []model.SelfReview,
+	selfReviews []model.SelfReview,
 ) error {
 	const op = "repo.CreateSelfReview"
 
 	batch := &pgx.Batch{}
 	query := `INSERT INTO self_review (user_id, score, result, resume) VALUES ($1, $2, $3, $4)`
 
-	for _, self_review := range self_reviews {
+	for _, self_review := range selfReviews {
 		batch.Queue(query, self_review.UserID, self_review.Score, self_review.Result, self_review.Resume)
 	}
 
@@ -87,14 +87,14 @@ func (s *Storage) GetSelfReviews(ctx context.Context,
 }
 
 func (s *Storage) InsertSelfScore(ctx context.Context,
-	self_reviews []model.SelfReview,
+	selfReviews []model.SelfReview,
 ) error {
 	const op = "repo.InsertSelfScore"
 
 	batch := &pgx.Batch{}
 	query := `INSERT INTO self_review (user_id, score) VALUES ($1, $2)`
 
-	for _, self_review := range self_reviews {
+	for _, self_review := range selfReviews {
 		batch.Queue(query, self_review.UserID, self_review.Score)
 	}
 
@@ -118,7 +118,7 @@ func (s *Storage) InsertSelfScore(ctx context.Context,
 }
 
 func (s *Storage) UpdateSelfResume(ctx context.Context,
-	self_reviews []model.SelfReview,
+	selfReviews []model.SelfReview,
 ) error {
 	const op = "repo.UpdateSelfResume"
 
@@ -132,13 +132,13 @@ func (s *Storage) UpdateSelfResume(ctx context.Context,
 
 	batch := &pgx.Batch{}
 
-	for _, self_review := range self_reviews {
+	for _, self_review := range selfReviews {
 		batch.Queue(query, self_review.UserID, self_review.Result, self_review.Resume)
 	}
 	br := s.pool.SendBatch(ctx, batch)
 	defer br.Close()
 
-	for range self_reviews {
+	for range selfReviews {
 		if _, err := br.Exec(); err != nil {
 			return fmt.Errorf("%s: %w", op, err)
 		}

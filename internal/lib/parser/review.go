@@ -7,8 +7,6 @@ import (
 )
 
 func ParseReview(text string) (map[string]float64, map[string]string) {
-	const op = "parser.ParseReview"
-
 	sections := strings.Split(text, "**")
 
 	scores := make(map[string]float64)

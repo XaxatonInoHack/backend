@@ -1,0 +1,172 @@
+Index: internal/usecase/review/contract.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"context\"\n\n\t\"xaxaton/internal/model\"\n)\n\ntype feedback interface {\n\tCreateReview(ctx context.Context, reviews []model.Review) error\n\tGetReview(ctx context.Context, userId int) ([]model.Review, error)\n}\n\ntype llm interface {\n\tGetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/contract.go b/internal/usecase/review/contract.go
+--- a/internal/usecase/review/contract.go	(revision d0dc2a2cc41d205d0cf3055b735e10c03d1be132)
++++ b/internal/usecase/review/contract.go	(date 1730623760210)
+@@ -12,5 +12,5 @@
+ }
+ 
+ type llm interface {
+-	GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error
++	GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) (string, string, error)
+ }
+Index: internal/usecase/review/review.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package review\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"os\"\n\n\t\"golang.org/x/sync/errgroup\"\n\n\t\"xaxaton/internal/model\"\n)\n\ntype UseCase struct {\n\tfeedback feedback\n\tllm      llm\n}\n\nfunc NewUseCase(f feedback, llm llm) *UseCase {\n\treturn &UseCase{\n\t\tfeedback: f,\n\t\tllm:      llm,\n\t}\n}\n\ntype User map[int64][]string\n\nfunc (u *UseCase) ParseJSON(ctx context.Context) error {\n\tplan, err := os.ReadFile(\"internal/usecase/review/review_dataset.json\")\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tvar data []Review\n\n\terr = json.Unmarshal(plan, &data)\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tg, ctxErr := errgroup.WithContext(ctx)\n\tg.Go(func() error {\n\t\treturn u.saveToDB(ctxErr, &data)\n\t})\n\n\tif err := g.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (u *UseCase) saveToDB(ctx context.Context, reviews *[]Review) error {\n\tdata := make([]model.Review, 0, len(*reviews))\n\n\tfor _, review := range *reviews {\n\t\tdata = append(data, model.Review{\n\t\t\tUserID:   review.UserID,\n\t\t\tReviewID: review.ReviewID,\n\t\t\tFeedback: review.Feedback,\n\t\t})\n\t}\n\n\tif err := u.feedback.CreateReview(ctx, data); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (u *UseCase) createFeedbackOne(ctx context.Context, reviews *[]Review) error {\n\temployeeReviews := make(map[int64]User, len(*reviews))\n\tselfReviews := make(map[int64]User, len(*reviews))\n\n\tfor _, review := range *reviews {\n\t\tif _, ok := employeeReviews[review.UserID]; !ok {\n\t\t\temployeeReviews[review.UserID] = make(User, 100)\n\t\t}\n\n\t\tif review.UserID == review.ReviewID {\n\t\t\tselfReviews[review.UserID][review.UserID] = append(selfReviews[review.UserID][review.UserID], review.Feedback)\n\n\t\t\tcontinue\n\t\t}\n\n\t\temployeeReviews[review.UserID][review.ReviewID] = append(employeeReviews[review.UserID][review.ReviewID], review.Feedback)\n\t}\n\n\tg, errCtx := errgroup.WithContext(ctx)\n\tfor index := range employeeReviews {\n\t\tg.Go(func() error {\n\t\t\temployeeReview := employeeReviews[index]\n\n\t\t\tselfReview, ok := selfReviews[index]\n\t\t\tif !ok {\n\t\t\t\tselfReview = nil\n\t\t\t}\n\n\t\t\treturn u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)\n\t\t})\n\t}\n\n\tif err := g.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/usecase/review/review.go b/internal/usecase/review/review.go
+--- a/internal/usecase/review/review.go	(revision d0dc2a2cc41d205d0cf3055b735e10c03d1be132)
++++ b/internal/usecase/review/review.go	(date 1730623760212)
+@@ -95,7 +95,10 @@
+ 				selfReview = nil
+ 			}
+ 
+-			return u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
++			employeeFeedback, selfFeedback, err := u.llm.GetFeedbackLLM(errCtx, selfReview, employeeReview)
++			if err != nil {
++				return err
++			}
+ 		})
+ 	}
+ 
+Index: internal/gateway/feedback_llm/gateway.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package feedback_llm\n\nimport (\n\t\"context\"\n\t\"fmt\"\n\t\"golang.org/x/sync/errgroup\"\n)\n\ntype Gateway struct {\n}\n\nfunc NewGateway() *Gateway {\n\treturn &Gateway{}\n}\n\nfunc (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error {\n\tpromptEmployee := \"Here are some reviews about an employee:\\n\\n\"\n\tpromptSelf := \"Here are some reviews about myself:\\n\\n\"\n\n\tgg, errCtx := errgroup.WithContext(ctx)\n\n\tgg.Go(func() error {\n\t\tfor employeeID, reviews := range employeeReview {\n\t\t\tpromptEmployee += fmt.Sprintf(\"Review employeeID - %v:\\n\", employeeID)\n\t\t\tfor ind, review := range reviews {\n\t\t\t\tpromptEmployee += fmt.Sprintf(\"%v review: %v\\n\\n\", ind+1, review)\n\t\t\t}\n\t\t}\n\n\t\tpromptEmployee += \"Based on these reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\\n\"\n\t\tpromptEmployee += \"1. Professionalism\\n2. Teamwork\\n3. Communication\\n4. Initiative\\n5. Overall Performance\\n\"\n\t\tpromptEmployee += \"Add short (5 sentences) explanation for each score you assigned.\"\n\n\t\treturn g.getEmployeeFeedback(errCtx, promptEmployee)\n\t})\n\n\tif selfReview != nil {\n\t\tgg.Go(func() error {\n\t\t\tfor selfID, reviews := range selfReview {\n\t\t\t\tpromptSelf += fmt.Sprintf(\"Review selfID - %v:\\n\\n\", selfID)\n\t\t\t\tfor ind, review := range reviews {\n\t\t\t\t\tpromptSelf += fmt.Sprintf(\"%v review: %v\\n\\n\", ind+1, review)\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tpromptEmployee += \"Based on these self reviews, evaluate the employee on a scale from 1 to 5 for the following criteria:\\n\"\n\t\t\tpromptEmployee += \"1. Professionalism\\n2. Teamwork\\n3. Communication\\n4. Initiative\\n5. Overall Performance\\n\"\n\t\t\tpromptEmployee += \"Add short (5 sentences) explanation for each score you assigned.\"\n\n\t\t\treturn g.getSelfFeedback(errCtx, promptEmployee)\n\t\t})\n\t}\n\n\tif err := gg.Wait(); err != nil {\n\t\treturn err\n\t}\n\n\treturn nil\n}\n\nfunc (g *Gateway) getEmployeeFeedback(ctx context.Context, prompt string) error {\n\tdata := map[string]interface{}{\n\t\t\"prompt\":              prompt,\n\t\t\"apply_chat_template\": true,\n\t\t\"system_prompt\":       \"You are a helpful assistant.\",\n\t\t\"max_tokens\":          400,\n\t\t\"n\":                   1,\n\t\t\"temperature\":         0.7,\n\t}\n\n}\n\nfunc (g *Gateway) getSelfFeedback(ctx context.Context, prompt string) error {\n\tdata := map[string]interface{}{\n\t\t\"prompt\":              prompt,\n\t\t\"apply_chat_template\": true,\n\t\t\"system_prompt\":       \"You are a helpful assistant.\",\n\t\t\"max_tokens\":          400,\n\t\t\"n\":                   1,\n\t\t\"temperature\":         0.7,\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/internal/gateway/feedback_llm/gateway.go b/internal/gateway/feedback_llm/gateway.go
+--- a/internal/gateway/feedback_llm/gateway.go	(revision d0dc2a2cc41d205d0cf3055b735e10c03d1be132)
++++ b/internal/gateway/feedback_llm/gateway.go	(date 1730623719302)
+@@ -1,8 +1,13 @@
+ package feedback_llm
+ 
+ import (
++	"bytes"
+ 	"context"
++	"encoding/json"
+ 	"fmt"
++	"io/ioutil"
++	"net/http"
++
+ 	"golang.org/x/sync/errgroup"
+ )
+ 
+@@ -13,13 +18,15 @@
+ 	return &Gateway{}
+ }
+ 
+-func (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) error {
++func (g *Gateway) GetFeedbackLLM(ctx context.Context, selfReview, employeeReview map[int64][]string) (string, string, error) {
+ 	promptEmployee := "Here are some reviews about an employee:\n\n"
+ 	promptSelf := "Here are some reviews about myself:\n\n"
+ 
+ 	gg, errCtx := errgroup.WithContext(ctx)
+ 
++	var reviewEmployee, reviewSelf string
+ 	gg.Go(func() error {
++		var err error
+ 		for employeeID, reviews := range employeeReview {
+ 			promptEmployee += fmt.Sprintf("Review employeeID - %v:\n", employeeID)
+ 			for ind, review := range reviews {
+@@ -31,11 +38,14 @@
+ 		promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
+ 		promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
+ 
+-		return g.getEmployeeFeedback(errCtx, promptEmployee)
++		reviewEmployee, err = g.getFeedback(errCtx, promptEmployee)
++
++		return err
+ 	})
+ 
+ 	if selfReview != nil {
+ 		gg.Go(func() error {
++			var err error
+ 			for selfID, reviews := range selfReview {
+ 				promptSelf += fmt.Sprintf("Review selfID - %v:\n\n", selfID)
+ 				for ind, review := range reviews {
+@@ -47,30 +57,21 @@
+ 			promptEmployee += "1. Professionalism\n2. Teamwork\n3. Communication\n4. Initiative\n5. Overall Performance\n"
+ 			promptEmployee += "Add short (5 sentences) explanation for each score you assigned."
+ 
+-			return g.getSelfFeedback(errCtx, promptEmployee)
+-		})
+-	}
+-
+-	if err := gg.Wait(); err != nil {
+-		return err
++			reviewSelf, err = g.getFeedback(errCtx, promptEmployee)
++			return err
++		})
+ 	}
+ 
+-	return nil
+-}
++	if err := gg.Wait(); err != nil {
++		return "", "", err
++	}
+ 
+-func (g *Gateway) getEmployeeFeedback(ctx context.Context, prompt string) error {
+-	data := map[string]interface{}{
+-		"prompt":              prompt,
+-		"apply_chat_template": true,
+-		"system_prompt":       "You are a helpful assistant.",
+-		"max_tokens":          400,
+-		"n":                   1,
+-		"temperature":         0.7,
+-	}
++	return reviewEmployee, reviewSelf, nil
++}
+ 
+-}
++func (g *Gateway) getFeedback(ctx context.Context, prompt string) (string, error) {
++	URL := "https://vk-scoreworker-case-backup.olymp.innopolis.university/generate"
+ 
+-func (g *Gateway) getSelfFeedback(ctx context.Context, prompt string) error {
+ 	data := map[string]interface{}{
+ 		"prompt":              prompt,
+ 		"apply_chat_template": true,
+@@ -79,4 +80,34 @@
+ 		"n":                   1,
+ 		"temperature":         0.7,
+ 	}
++
++	marshalData, err := json.Marshal(data)
++	if err != nil {
++		return "", err
++	}
++
++	r := bytes.NewReader(marshalData)
++
++	request, err := http.NewRequestWithContext(ctx, "POST", URL, r)
++	if err != nil {
++		return "", err
++	}
++
++	request.Header.Set("Content-Type", "application/json")
++
++	response, err := http.DefaultClient.Do(request)
++	if err != nil {
++		return "", err
++	}
++
++	if response.StatusCode != http.StatusOK {
++		return "", fmt.Errorf("response status: %s", response.Status)
++	}
++
++	responseData, err := ioutil.ReadAll(response.Body)
++	if err != nil {
++		return "", err
++	}
++
++	return string(responseData), nil
+ }
