@@ -5,8 +5,12 @@ networks:
 
 services:
   xaxaton_server:
-    image: gipnotyin/xaxaton:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xaxaton_server
     restart: always
+    command: ["/prepare"]
     ports:
       - "127.0.0.1:8001:8001"
     depends_on:
@@ -14,6 +18,7 @@ services:
     volumes:
       - server-data:/var/lib/server/data
       - ./config_prod.yaml:/config.yaml
+      - ./internal/usecase/review/review_dataset.json:/internal/usecase/review/review_dataset.json
     networks:
       - network
 
