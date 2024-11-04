@@ -71,7 +71,7 @@ func (g *Gateway) GetFeedbackLLMFinal(ctx context.Context, employeeReview map[in
 
 		employeeScore, ok := employeeScores[employeeID]
 		if ok {
-			weight := converter.ScoreToResult(parser.ParseScores(employeeScore.Score))
+			weight := converter.ScoreToResult(parser.ParseScores(employeeScore.Score), -1)
 			promptEmployee += fmt.Sprintf("Вес оценивающего сотрудника: %s\n\n", weight)
 		}
 	}

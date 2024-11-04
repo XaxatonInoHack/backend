@@ -25,7 +25,7 @@ func Test_scoreToResult(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ScoreToResult(tt.args.score); got != tt.want {
+			if got := ScoreToResult(tt.args.score, -1); got != tt.want {
 				t.Errorf("scoreToResult() = %v, want %v", got, tt.want)
 			}
 		})
